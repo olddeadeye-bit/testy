@@ -381,7 +381,23 @@ def _alpha(raw: str) -> float:
     return value
 
 
+def _make_output_robust() -> None:
+    """Never let an unprintable character crash a report.
+
+    Windows consoles still default to legacy codepages that have no em-dash,
+    so writing a prize figure or a table rule raises UnicodeEncodeError and
+    takes the whole command down. Keeping the console's own encoding but
+    replacing what it cannot render degrades one character instead.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_output_robust()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

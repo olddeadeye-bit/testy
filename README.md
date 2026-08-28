@@ -34,16 +34,26 @@ real effect at your sample size before trusting it to report an absence.
 
 ## Quick start — no Terminal at all
 
-**Double-click `Start Lottery Tool.command` in the folder.**
+Double-click the launcher for your computer:
 
-It checks Python is present, downloads the draw history the first time, and
-opens the app in your browser. A Terminal window appears and reports what it is
-doing; leave it open while you use the app, and close it to stop.
+| | |
+| --- | --- |
+| **Windows** | `Start Lottery Tool.bat` |
+| **Mac** | `Start Lottery Tool.command` |
 
-If macOS says it cannot be opened because it is from an unidentified developer
-(this happens when the folder arrived as a downloaded ZIP rather than a `git
-clone`), right-click the file, choose **Open**, then **Open** again. That is
-needed once only.
+Either one finds Python, downloads the draw history on first run, and opens the
+app in your browser. A console window appears and reports what it is doing;
+leave it open while you use the app, and close it to stop.
+
+**Windows**: if Python is missing, the launcher points you at
+python.org/downloads and tells you to tick *"Add python.exe to PATH"* on the
+installer's first screen — the step whose omission causes most of the trouble.
+SmartScreen may warn about an unrecognised app; choose *More info* then *Run
+anyway*.
+
+**Mac**: if macOS says the file is from an unidentified developer (which happens
+when the folder arrived as a downloaded ZIP rather than a `git clone`),
+right-click it, choose **Open**, then **Open** again. Once only.
 
 ## Quick start — the point-and-click version
 
@@ -451,7 +461,8 @@ from the 180 fake ones the sweep manufactures for free.
 ## Layout
 
 ```
-Start Lottery Tool.command   Double-click this
+Start Lottery Tool.bat       Double-click this on Windows
+Start Lottery Tool.command   Double-click this on Mac
 lotterypatterns/
   draws.py      Draw, DrawHistory, CSV loading, fair and rigged simulators
   features.py   Per-draw features

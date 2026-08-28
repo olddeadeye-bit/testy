@@ -102,10 +102,22 @@ def load_history(game: str | Game, path: str | None = None) -> DrawHistory:
             f"{path} has no '{game.date_column}' or 'date' column. Its columns are: "
             f"{', '.join(headers) or '(none)'}"
         )
-    return DrawHistory.from_csv(
-        path, pool=game.pool, picks=game.picks,
-        date_column=date_column,
-        number_columns=list(game.number_columns) if official else None,
-        bonus_columns=[c for c in game.bonus_columns if c in headers],
-        name=game.name,
-    )
+    try:
+        return DrawHistory.from_csv(
+            path, pool=game.pool, picks=game.picks,
+            date_column=date_column,
+            number_columns=list(game.number_columns) if official else None,
+            bonus_columns=[c for c in game.bonus_columns if c in headers],
+            name=game.name,
+        )
+    except ValueError as exc:
+        # Much the commonest cause is pointing one game's loader at another
+        # game's file, which produces a bare "number out of pool" complaint.
+        raise FetchError(
+            f"{path} does not look like {game.name} draws ({exc}).\n"
+            f"{game.name} draws {game.picks} numbers from 1 to {game.pool}. "
+            "Either the file belongs to a different game, or --game names the "
+            "wrong one.\n"
+            f"To analyse real {game.name} draws, download them with:\n"
+            f"    python3 -m lotterypatterns fetch --game {game.key}"
+        ) from exc
