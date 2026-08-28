@@ -138,6 +138,12 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    from .gui import serve
+    serve(port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     print("Draw features (left-hand side of each hypothesis):")
     for feature in FEATURES:
@@ -185,6 +191,13 @@ def build_parser() -> argparse.ArgumentParser:
                              choices=sorted(METRICS_BY_NAME))
     demo_parser.add_argument("--strength", type=float, default=1.2)
     demo_parser.set_defaults(func=cmd_demo)
+
+    gui_parser = subparsers.add_parser(
+        "gui", help="Open the point-and-click version in your browser")
+    gui_parser.add_argument("--port", type=int, default=8765)
+    gui_parser.add_argument("--no-browser", action="store_true",
+                            help="Start the server without opening a browser")
+    gui_parser.set_defaults(func=cmd_gui)
 
     list_parser = subparsers.add_parser("list", help="List features and metrics")
     list_parser.set_defaults(func=cmd_list)

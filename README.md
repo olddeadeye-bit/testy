@@ -32,13 +32,42 @@ crooked machine too, `simulate_biased_draws` builds a history that genuinely
 does track a metric, so you can confirm the search has the power to detect a
 real effect at your sample size before trusting it to report an absence.
 
-## Quick start
+## Quick start — the point-and-click version
+
+```bash
+python3 -m lotterypatterns gui
+```
+
+That is the whole setup. It opens in your browser, and you press **Run the search**.
+Nothing to install, nothing sent anywhere — the server binds to localhost only and
+your draw data never leaves the machine. Press Control-C in the terminal to stop it.
+
+The GUI covers everything: pick your data (bundled sample, your own CSV, or an
+invented fair/rigged game), choose what to test against, drop in your own metric
+CSV, and read the result as a plain-English verdict rather than a table of
+p-values. Uploading is drag-free — just pick the file; it is read in your browser
+and posted to the local server, never to the internet.
+
+Two things in the interface are worth knowing:
+
+- **The verdict banner** says in words whether anything survived, and how many hits
+  pure chance would have produced anyway.
+- **The p-value histogram** is the honest picture. When there is no pattern, the
+  bars sit level with the dashed line. A tall bar on the far left is the only shape
+  that suggests something real, and the app only colours it when it genuinely stands
+  above chance.
+
+The **Second opinion** button re-runs the whole search on ten lotteries with nothing
+in them, so you can see what "finding nothing" normally looks like. It takes about
+15 seconds.
+
+## Quick start — the command line
 
 ```bash
 # What can be tested against what
 python3 -m lotterypatterns list
 
-# Fair game vs. rigged game, side by side — start here
+# Fair game vs. rigged game, side by side
 python3 -m lotterypatterns demo
 
 # Search real draws, including your own external metric
@@ -157,7 +186,9 @@ lotterypatterns/
   metrics.py    Date-keyed metrics, controls, external CSV loader
   stats.py      Correlations, mutual information, permutation tests, FDR
   search.py     The sweep, the report, null calibration
-  cli.py        search / calibrate / demo / list
-tests/          39 tests, including hand-computed statistical checks
+  cli.py        gui / search / calibrate / demo / list
+  gui.py        Local web server behind the browser interface
+  static/       The single-page GUI
+tests/          62 tests, including hand-computed statistical checks
 data/           Sample draw history and a sample external metric
 ```

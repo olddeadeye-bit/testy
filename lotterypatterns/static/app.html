@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lottery Pattern Search</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #14171c; --muted: #5c6673;
+  --line: #dfe3e8; --accent: #2f5fd0; --accent-soft: #e8eefc;
+  --good: #197a4b; --good-soft: #e3f5ec; --warn: #9a6206; --warn-soft: #fdf1dc;
+  --bad: #b3261e; --bad-soft: #fbe9e7; --shadow: 0 1px 3px rgba(16,20,28,.08);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --panel: #1c2027; --ink: #e8ecf1; --muted: #9aa5b3;
+    --line: #2c323b; --accent: #7ea3f0; --accent-soft: #22304d;
+    --good: #6cd39c; --good-soft: #16301f; --warn: #e6b25c; --warn-soft: #33280f;
+    --bad: #f08a80; --bad-soft: #3a1c19; --shadow: 0 1px 3px rgba(0,0,0,.4);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 80px; }
+header { margin-bottom: 26px; }
+h1 { font-size: 27px; margin: 0 0 6px; letter-spacing: -.02em; }
+header p { margin: 0; color: var(--muted); max-width: 68ch; }
+.layout { display: grid; grid-template-columns: 340px 1fr; gap: 22px; align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 18px; box-shadow: var(--shadow); margin-bottom: 16px;
+}
+.step { font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; margin-bottom: 3px; }
+h2 { font-size: 16px; margin: 0 0 4px; }
+.hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+.choice { display: block; border: 1px solid var(--line); border-radius: 9px;
+  padding: 11px 13px; margin-bottom: 8px; cursor: pointer; transition: .12s; }
+.choice:hover { border-color: var(--accent); }
+.choice input { margin-right: 8px; }
+.choice.on { border-color: var(--accent); background: var(--accent-soft); }
+.choice b { font-weight: 600; }
+.choice small { display: block; color: var(--muted); margin: 2px 0 0 22px; font-size: 12.5px; }
+.sub { margin: 10px 0 2px 22px; display: none; }
+.sub.show { display: block; }
+label.field { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+input[type=text], input[type=number], select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--bg); color: var(--ink); font: inherit; font-size: 14px;
+}
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+button {
+  font: inherit; font-weight: 600; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  padding: 9px 14px;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff;
+  width: 100%; padding: 13px; font-size: 15.5px; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+details { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--muted); }
+summary:hover { color: var(--accent); }
+.checks { max-height: 260px; overflow-y: auto; margin-top: 10px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.check { display: flex; gap: 8px; align-items: flex-start; padding: 5px 4px;
+  font-size: 13.5px; border-radius: 5px; }
+.check:hover { background: var(--bg); }
+.check input { margin-top: 3px; }
+.check span { color: var(--muted); font-size: 12.5px; display: block; }
+.tag { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  background: var(--warn-soft); color: var(--warn); padding: 1px 6px;
+  border-radius: 4px; font-weight: 700; margin-left: 5px; }
+.verdict { border-radius: 12px; padding: 20px 22px; margin-bottom: 16px;
+  border: 1px solid var(--line); }
+.verdict.none { background: var(--good-soft); border-color: var(--good); }
+.verdict.some { background: var(--warn-soft); border-color: var(--warn); }
+.verdict h3 { margin: 0 0 6px; font-size: 19px; }
+.verdict.none h3 { color: var(--good); }
+.verdict.some h3 { color: var(--warn); }
+.verdict p { margin: 0; max-width: 74ch; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 13px 15px; }
+.tile .k { font-size: 12px; color: var(--muted); }
+.tile .v { font-size: 25px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px;
+  font-variant-numeric: tabular-nums; }
+.tile .n { font-size: 12px; color: var(--muted); margin-top: 2px; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); font-weight: 700; }
+td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: 12.5px; }
+td.q { font-weight: 700; }
+tr.survivor td.q { color: var(--good); }
+tr.ctrl { opacity: .68; }
+.scroll { overflow-x: auto; }
+.err { background: var(--bad-soft); border: 1px solid var(--bad); color: var(--bad);
+  border-radius: 9px; padding: 13px 15px; margin-bottom: 16px; }
+.empty { color: var(--muted); text-align: center; padding: 54px 20px; }
+.spin { display: inline-block; width: 13px; height: 13px; border: 2px solid currentColor;
+  border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite;
+  vertical-align: -1px; margin-right: 7px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.legend { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--bg);
+  padding: 1px 5px; border-radius: 4px; }
+.file { font-size: 13px; }
+.filename { color: var(--good); font-size: 12.5px; margin-top: 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Lottery Pattern Search</h1>
+  <p>Tests thousands of "do the numbers follow the moon / sunspots / Mercury?" hypotheses at once —
+     and then corrects for the fact that it asked thousands of questions, which is the part that
+     decides whether an answer means anything.</p>
+</header>
+
+<div class="layout">
+<div>
+  <div class="panel">
+    <div class="step">Step 1</div>
+    <h2>Where do the numbers come from?</h2>
+    <p class="hint">Not sure? Leave it on the sample and press Run.</p>
+
+    <label class="choice on"><input type="radio" name="src" value="sample" checked>
+      <b>Sample draws</b><small>520 draws bundled with the app. Nothing to set up.</small></label>
+
+    <label class="choice"><input type="radio" name="src" value="upload">
+      <b>My own file</b><small>A spreadsheet saved as CSV.</small></label>
+    <div class="sub" id="sub-upload">
+      <input type="file" id="drawfile" accept=".csv,text/csv" class="file">
+      <div class="filename" id="drawname"></div>
+      <div class="row">
+        <div><label class="field">Highest ball</label><input type="number" id="pool" value="59" min="2" max="200"></div>
+        <div><label class="field">Balls per draw</label><input type="number" id="picks" value="6" min="1" max="50"></div>
+      </div>
+      <p class="hint" style="margin-top:9px">Needs a <code>date</code> column and one column per ball
+        (<code>n1</code>, <code>n2</code>, …).</p>
+    </div>
+
+    <label class="choice"><input type="radio" name="src" value="fair">
+      <b>A fair game (invented)</b><small>Honest random draws. There is nothing to find — good for
+      seeing what "nothing" looks like.</small></label>
+
+    <label class="choice"><input type="radio" name="src" value="rigged">
+      <b>A rigged game (invented)</b><small>Draws secretly tilted by a metric you choose. Proves the
+      search can find a real effect.</small></label>
+    <div class="sub" id="sub-rigged">
+      <label class="field">Rig the draws on</label>
+      <select id="planted"></select>
+      <label class="field">How strong is the rigging?</label>
+      <input type="range" id="strength" min="0.2" max="3" step="0.1" value="1.2" style="width:100%">
+      <div class="hint" id="strengthlabel" style="margin:2px 0 0">1.2 — clearly detectable</div>
+    </div>
+    <div class="sub" id="sub-count">
+      <label class="field">How many draws to invent</label>
+      <input type="number" id="count" value="500" min="60" max="20000" step="50">
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="step">Step 2</div>
+    <h2>What should it test against?</h2>
+    <p class="hint">All of them, unless you have a reason. The two marked <span class="tag">control</span>
+       are pure noise on purpose — they show what "no information at all" scores.</p>
+    <button id="alltoggle" style="font-size:13px;padding:6px 11px">Clear all</button>
+    <div class="checks" id="metrics"></div>
+    <details>
+      <summary>Add my own metric from a file</summary>
+      <p class="hint" style="margin-top:10px">A CSV with a <code>date</code> column and a
+        <code>value</code> column — rainfall, a share price, your step count, anything.</p>
+      <input type="file" id="metricfile" accept=".csv,text/csv" class="file">
+      <div class="filename" id="metricname"></div>
+      <label class="field">Call it</label>
+      <input type="text" id="metriclabel" placeholder="rainfall_mm">
+    </details>
+  </div>
+
+  <div class="panel">
+    <details>
+      <summary>Step 3 — Advanced settings (safe to ignore)</summary>
+      <label class="field">Lags, in draws — does a metric from N draws ago predict this one?</label>
+      <input type="text" id="lags" value="0-3">
+      <label class="field">How to measure a relationship</label>
+      <div id="methods"></div>
+      <label class="field">Significance threshold (alpha)</label>
+      <input type="number" id="alpha" value="0.05" min="0.001" max="0.5" step="0.005">
+      <label class="field">Random seed for invented games</label>
+      <input type="number" id="seed" value="0" min="0">
+    </details>
+  </div>
+
+  <button class="primary" id="run">Run the search</button>
+  <button id="calibrate" style="width:100%;margin-top:9px">Second opinion: what does it find in
+    games with nothing in them?</button>
+  <p class="hint" style="text-align:center;margin:7px 0 0">The second opinion runs the whole search
+    ten more times — give it around 15 seconds.</p>
+</div>
+
+<div id="out">
+  <div class="panel empty">Press <b>Run the search</b> to begin.<br>
+    The first run takes about a second.</div>
+</div>
+</div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c;
+  if (x !== undefined) n.textContent = x; return n; };
+let OPTIONS = null, drawCSV = null, drawFile = null, metricCSV = null;
+
+const STRENGTH_WORDS = [[0.5,'barely there — likely missed'],[1.0,'subtle'],
+  [1.8,'clearly detectable'],[9,'blatant']];
+
+function syncSource() {
+  const v = document.querySelector('input[name=src]:checked').value;
+  document.querySelectorAll('.choice').forEach(c =>
+    c.classList.toggle('on', c.querySelector('input').checked));
+  $('#sub-upload').classList.toggle('show', v === 'upload');
+  $('#sub-rigged').classList.toggle('show', v === 'rigged');
+  $('#sub-count').classList.toggle('show', v === 'fair' || v === 'rigged');
+}
+document.querySelectorAll('input[name=src]').forEach(r =>
+  r.addEventListener('change', syncSource));
+
+$('#strength').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  $('#strengthlabel').textContent = v.toFixed(1) + ' — ' +
+    STRENGTH_WORDS.find(w => v <= w[0])[1];
+});
+
+function readFile(input, onDone) {
+  const f = input.files[0];
+  if (!f) return onDone(null, null);
+  const reader = new FileReader();
+  reader.onload = () => onDone(reader.result, f.name);
+  reader.onerror = () => onDone(null, null);
+  reader.readAsText(f);
+}
+$('#drawfile').addEventListener('change', e => readFile(e.target, (text, name) => {
+  drawCSV = text; drawFile = name;
+  $('#drawname').textContent = name ? '✓ ' + name : '';
+}));
+$('#metricfile').addEventListener('change', e => readFile(e.target, (text, name) => {
+  metricCSV = text;
+  $('#metricname').textContent = name ? '✓ ' + name : '';
+  if (name && !$('#metriclabel').value)
+    $('#metriclabel').value = name.replace(/\.csv$/i, '');
+}));
+
+async function loadOptions() {
+  OPTIONS = await (await fetch('/api/options')).json();
+  const box = $('#metrics');
+  OPTIONS.metrics.forEach(m => {
+    const lab = el('label', 'check');
+    const cb = el('input'); cb.type = 'checkbox'; cb.value = m.name; cb.checked = true;
+    const body = el('div');
+    const title = el('div'); title.append(m.name.replace(/_/g, ' '));
+    if (m.is_control) title.append(el('span', 'tag', 'control'));
+    body.append(title, el('span', '', m.description));
+    lab.append(cb, body); box.append(lab);
+  });
+  const planted = $('#planted');
+  OPTIONS.metrics.filter(m => !m.is_control).forEach(m => {
+    const o = el('option', '', m.name.replace(/_/g, ' ')); o.value = m.name;
+    if (m.name === 'moon_illumination') o.selected = true;
+    planted.append(o);
+  });
+  const mbox = $('#methods');
+  OPTIONS.methods.forEach(m => {
+    const lab = el('label', 'check');
+    const cb = el('input'); cb.type = 'checkbox'; cb.value = m.name;
+    cb.checked = m.name !== 'mutual_info';
+    const body = el('div');
+    body.append(el('div', '', m.label), el('span', '', m.description));
+    lab.append(cb, body); mbox.append(lab);
+  });
+}
+
+$('#alltoggle').addEventListener('click', () => {
+  const boxes = [...document.querySelectorAll('#metrics input')];
+  const turnOn = !boxes.every(b => b.checked);
+  boxes.forEach(b => b.checked = turnOn);
+  $('#alltoggle').textContent = turnOn ? 'Clear all' : 'Select all';
+});
+
+function payload() {
+  const src = document.querySelector('input[name=src]:checked').value;
+  const body = {
+    source: src,
+    pool: +$('#pool').value, picks: +$('#picks').value,
+    count: +$('#count').value, seed: +$('#seed').value,
+    lags: $('#lags').value, alpha: +$('#alpha').value,
+    planted_metric: $('#planted').value, strength: +$('#strength').value,
+    metrics: [...document.querySelectorAll('#metrics input:checked')].map(b => b.value),
+    methods: [...document.querySelectorAll('#methods input:checked')].map(b => b.value),
+  };
+  if (src === 'upload') { body.csv = drawCSV; body.filename = drawFile; }
+  if (metricCSV) body.extra_metric = { csv: metricCSV,
+    name: $('#metriclabel').value || 'your metric' };
+  return body;
+}
+
+function fmt(x) {
+  if (x === null || x === undefined) return '—';
+  if (x === 0) return '0';
+  if (Math.abs(x) < 0.0001 || Math.abs(x) >= 100000) return x.toExponential(1);
+  return (+x).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function histogram(ps) {
+  const bins = new Array(20).fill(0);
+  ps.forEach(p => bins[Math.min(19, Math.floor(p * 20))]++);
+  const peak = Math.max(...bins, 1), expected = ps.length / 20;
+  const W = 560, H = 130, pad = 26, bw = (W - pad * 2) / 20;
+  // Highlight the leftmost bar only when it actually stands above chance —
+  // colouring it regardless would imply a finding in a flat, empty result.
+  const elevated = bins[0] > expected * 1.5;
+  const bars = bins.map((c, i) => {
+    const h = (c / peak) * (H - pad - 14);
+    return `<rect x="${pad + i * bw + 1}" y="${H - pad - h}" width="${bw - 2}" height="${h}"
+      fill="${i === 0 && elevated ? 'var(--accent)' : 'var(--line)'}" rx="1.5"/>`;
+  }).join('');
+  const ey = H - pad - (expected / peak) * (H - pad - 14);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"
+    aria-label="Histogram of p-values across every hypothesis tested">
+    ${bars}
+    <line x1="${pad}" y1="${ey}" x2="${W - pad}" y2="${ey}" stroke="var(--warn)"
+      stroke-dasharray="4 3" stroke-width="1.5"/>
+    <text x="${W - pad}" y="${ey - 5}" fill="var(--warn)" font-size="10.5"
+      text-anchor="end">flat = pure chance</text>
+    <line x1="${pad}" y1="${H - pad}" x2="${W - pad}" y2="${H - pad}" stroke="var(--line)"/>
+    <text x="${pad}" y="${H - 9}" fill="var(--muted)" font-size="10.5">p = 0</text>
+    <text x="${W - pad}" y="${H - 9}" fill="var(--muted)" font-size="10.5"
+      text-anchor="end">p = 1</text>
+  </svg>`;
+}
+
+function renderSearch(d) {
+  const out = $('#out');
+  out.textContent = '';
+  const survived = d.survivors > 0;
+
+  const v = el('div', 'verdict ' + (survived ? 'some' : 'none'));
+  if (!survived) {
+    v.append(el('h3', '', 'Nothing found — and that is the right answer'));
+    v.append(el('p', '', `Out of ${d.n_tests.toLocaleString()} hypotheses, ${d.naive_hits} looked ` +
+      `interesting at first glance. Pure chance alone produces about ` +
+      `${d.expected_naive_hits.toFixed(0)}, so those are noise. None survived correction. ` +
+      `That is what an honest lottery looks like.`));
+  } else {
+    v.append(el('h3', '', `${d.survivors} result${d.survivors > 1 ? 's' : ''} survived correction`));
+    v.append(el('p', '', d.beat_floor > 0
+      ? `${d.beat_floor} of them also scored better than the pure-noise controls, so they are worth ` +
+        `a second look — on fresh draws that were not part of this search.`
+      : `None beat the pure-noise controls, which means they are very likely noise too.`));
+  }
+  out.append(v);
+
+  const tiles = el('div', 'tiles');
+  const tile = (k, val, note) => {
+    const t = el('div', 'tile');
+    t.append(el('div', 'k', k), el('div', 'v', val));
+    if (note) t.append(el('div', 'n', note));
+    tiles.append(t);
+  };
+  tile('Draws analysed', d.draws.toLocaleString(), `${d.first_date} to ${d.last_date}`);
+  tile('Hypotheses tested', d.n_tests.toLocaleString(), 'every combination');
+  tile('Looked significant', d.naive_hits, `chance alone gives ~${d.expected_naive_hits.toFixed(0)}`);
+  tile('Survived correction', d.survivors, survived ? 'check these carefully' : 'as expected');
+  if (d.control_floor !== null)
+    tile('Noise floor', fmt(d.control_floor), 'best score by a metric with no information');
+  out.append(tiles);
+
+  const chart = el('div', 'panel');
+  chart.style.marginTop = '16px';
+  chart.append(el('h2', '', 'Every result, spread by p-value'));
+  chart.append(el('p', 'hint',
+    'When there is no pattern, these bars sit level with the dashed line. A tall first bar on the ' +
+    'left is the only shape that suggests something real.'));
+  const svg = el('div'); svg.innerHTML = histogram(d.p_values);
+  chart.append(svg);
+  out.append(chart);
+
+  const panel = el('div', 'panel');
+  panel.append(el('h2', '', 'Strongest results'));
+  panel.append(el('p', 'hint', 'Read the q column, not p. q already accounts for the fact that ' +
+    `${d.n_tests.toLocaleString()} questions were asked; p does not, and will mislead you here.`));
+  const scroll = el('div', 'scroll');
+  const table = el('table');
+  table.innerHTML = '<thead><tr><th>Draw feature</th><th>Metric</th><th>Lag</th>' +
+    '<th>Measure</th><th style="text-align:right">Strength</th>' +
+    '<th style="text-align:right">p (raw)</th><th style="text-align:right">q (corrected)</th>' +
+    '</tr></thead>';
+  const tb = el('tbody');
+  const SHOWN = 25;
+  d.results.forEach((r, i) => {
+    const tr = el('tr', (r.q_value <= d.alpha ? 'survivor ' : '') + (r.is_control ? 'ctrl' : ''));
+    const name = el('td', '', r.metric.replace(/_/g, ' '));
+    if (r.is_control) name.append(el('span', 'tag', 'control'));
+    tr.append(el('td', '', r.feature.replace(/_/g, ' ')), name,
+      el('td', 'num', r.lag), el('td', '', r.method.replace('_', ' ')),
+      el('td', 'num', (r.statistic >= 0 ? '+' : '') + fmt(r.statistic)),
+      el('td', 'num', fmt(r.p_value)), el('td', 'num q', fmt(r.q_value)));
+    if (i >= SHOWN) tr.hidden = true;
+    tb.append(tr);
+  });
+  table.append(tb); scroll.append(table); panel.append(scroll);
+  if (d.results.length > SHOWN) {
+    const more = el('button', '', `Show all ${d.results.length} results`);
+    more.style.marginTop = '12px';
+    more.addEventListener('click', () => {
+      const hidden = [...tb.rows].some(r => r.hidden);
+      [...tb.rows].forEach((r, i) => { if (i >= SHOWN) r.hidden = !hidden; });
+      more.textContent = hidden ? 'Show fewer' : `Show all ${d.results.length} results`;
+    });
+    panel.append(more);
+  }
+  panel.append(el('p', 'legend', 'Lag 0 = the metric on the day of the draw. Lag 2 = the metric ' +
+    'two draws earlier. Rows in green survived correction; faded rows are the noise controls.'));
+  out.append(panel);
+  out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderCalibration(d) {
+  const out = $('#out');
+  const panel = el('div', 'panel');
+  panel.style.borderColor = 'var(--accent)';
+  panel.append(el('h2', '', 'Second opinion: games with nothing in them'));
+  panel.append(el('p', 'hint', `The same search was run ${d.runs} times on invented fair lotteries. ` +
+    'Every hit below is fake by construction — so this is the bar your real results have to clear.'));
+  const tiles = el('div', 'tiles');
+  const tile = (k, v, n) => { const t = el('div', 'tile');
+    t.append(el('div', 'k', k), el('div', 'v', v)); if (n) t.append(el('div', 'n', n));
+    tiles.append(t); };
+  tile('Looked significant', d.mean_naive_hits.toFixed(1), `per run, worst was ${d.max_naive_hits}`);
+  tile('Survived correction', d.mean_survivors.toFixed(2), `per run, worst was ${d.max_survivors}`);
+  tile('Runs', d.runs, `${d.n_tests.toLocaleString()} hypotheses each`);
+  panel.append(tiles);
+  out.prepend(panel);
+  panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function showError(msg) {
+  const out = $('#out');
+  out.textContent = '';
+  const e = el('div', 'err');
+  e.append(el('b', '', 'That did not run. '), document.createTextNode(msg));
+  out.append(e);
+}
+
+async function call(url, btn, busyText, onOK) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>' + busyText;
+  try {
+    const res = await fetch(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload()) });
+    const data = await res.json();
+    if (!res.ok) showError(data.error || 'Unknown problem.');
+    else onOK(data);
+  } catch (err) {
+    showError('Could not reach the app. Is it still running in Terminal?');
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+}
+
+$('#run').addEventListener('click', () =>
+  call('/api/search', $('#run'), 'Searching…', renderSearch));
+$('#calibrate').addEventListener('click', () =>
+  call('/api/calibrate', $('#calibrate'), 'Running 10 fair games — about 15s…', renderCalibration));
+
+syncSource();
+loadOptions();
+</script>
+</body>
+</html>

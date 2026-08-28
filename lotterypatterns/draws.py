@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import math
 import random
 from dataclasses import dataclass
@@ -89,9 +90,24 @@ class DrawHistory(Sequence[Draw]):
         most published draw archives.
         """
         with open(path, newline="", encoding="utf-8-sig") as handle:
-            rows = list(csv.DictReader(handle))
+            text = handle.read()
+        return cls.from_csv_text(
+            text, pool=pool, picks=picks, date_column=date_column,
+            number_columns=number_columns, bonus_columns=bonus_columns,
+            name=name or path, source=path,
+        )
+
+    @classmethod
+    def from_csv_text(cls, text: str, *, pool: int, picks: int | None = None,
+                      date_column: str = "date",
+                      number_columns: Sequence[str] | None = None,
+                      bonus_columns: Sequence[str] = (), name: str | None = None,
+                      source: str = "uploaded CSV") -> "DrawHistory":
+        """Parse draws from CSV held in memory — the path the GUI upload takes."""
+        rows = list(csv.DictReader(io.StringIO(text)))
         if not rows:
-            raise ValueError(f"{path} contains no rows")
+            raise ValueError(f"{source} contains no rows")
+        path = source
 
         headers = list(rows[0].keys())
         if number_columns is None:
