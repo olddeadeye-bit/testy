@@ -6,7 +6,10 @@ import argparse
 import sys
 from datetime import date
 
+from .bias import analyse_bonus_balls, analyse_main_balls
 from .draws import DrawHistory, simulate_biased_draws, simulate_draws
+from .games import GAMES, get_game
+from .picker import suggest
 from .features import FEATURES, select_features
 from .metrics import BUILTIN_METRICS, METRICS_BY_NAME, default_metrics, metric_from_csv
 from .search import METHODS, null_calibration, search
@@ -27,6 +30,9 @@ def _parse_lags(raw: str) -> list[int]:
 
 
 def _load_history(args: argparse.Namespace) -> DrawHistory:
+    if getattr(args, "game", None):
+        from .fetch import load_history
+        return load_history(get_game(args.game), getattr(args, "draws", None))
     if args.draws:
         return DrawHistory.from_csv(
             args.draws,
@@ -51,6 +57,8 @@ def _collect_metrics(args: argparse.Namespace):
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--draws", help="CSV of draw history (date + one column per ball)")
+    parser.add_argument("--game", choices=sorted(GAMES),
+                        help="Use a downloaded UK game archive instead of --draws")
     parser.add_argument("--simulate", type=int, default=500,
                         help="Draws to simulate when --draws is omitted (default 500)")
     parser.add_argument("--pool", type=int, default=59, help="Highest ball number")
@@ -138,6 +146,78 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fetch(args: argparse.Namespace) -> int:
+    """Download real data — draw archives, weather history, or both."""
+    from .fetch import FetchError, download_history
+    failures = 0
+
+    if args.weather:
+        from datetime import date as _date
+        from .weather import WeatherError, fetch_weather
+        start = _date.fromisoformat(args.start) if args.start else _date(2015, 1, 1)
+        try:
+            path = fetch_weather(start, _date.today(), latitude=args.latitude,
+                                 longitude=args.longitude, path=args.weather_path)
+            print(f"Saved weather history to {path}")
+        except WeatherError as exc:
+            print(f"Weather download failed:\n{exc}")
+            failures += 1
+
+    games = [args.game] if args.game else ([] if args.weather else sorted(GAMES))
+    for key in games:
+        try:
+            download_history(key)
+        except FetchError as exc:
+            print(f"\n{get_game(key).name} download failed:\n{exc}")
+            failures += 1
+    return 1 if failures else 0
+
+
+def cmd_bias(args: argparse.Namespace) -> int:
+    """Test whether the balls themselves come up evenly."""
+    game = get_game(args.game)
+    history = _load_history(args)
+    main = analyse_main_balls(history, alpha=args.alpha)
+    print(main.summary())
+    bonus = analyse_bonus_balls(history, game, alpha=args.alpha)
+    if bonus is not None:
+        print()
+        print(bonus.summary())
+    if args.show_counts:
+        print("\nEvery ball, most drawn first:")
+        for ball in main.hottest:
+            print(f"  {ball}")
+    return 0
+
+
+def cmd_suggest(args: argparse.Namespace) -> int:
+    """Suggest lines to play, using whatever the analysis actually established."""
+    game = get_game(args.game)
+    history = _load_history(args)
+    main = analyse_main_balls(history, alpha=args.alpha)
+    bonus = analyse_bonus_balls(history, game, alpha=args.alpha)
+    result = suggest(game, count=args.lines, bias_report=main, bonus_bias=bonus,
+                     draws_analysed=len(history), alpha=args.alpha,
+                     seed=args.seed if args.seed else None)
+    print(result.summary())
+    if args.why:
+        print("\nWhy each line:")
+        for i, ticket in enumerate(result.tickets, 1):
+            print(f"  {i}. " + "; ".join(ticket.reasons))
+    return 0
+
+
+def cmd_games(args: argparse.Namespace) -> int:
+    for game in GAMES.values():
+        print(game.describe())
+        print(f"    Draw days: {', '.join(game.draw_days)}")
+        print(f"    Top prize: {game.top_prize}")
+        if game.notes:
+            print(f"    Note: {game.notes}")
+        print()
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import serve
     serve(port=args.port, open_browser=not args.no_browser)
@@ -191,6 +271,42 @@ def build_parser() -> argparse.ArgumentParser:
                              choices=sorted(METRICS_BY_NAME))
     demo_parser.add_argument("--strength", type=float, default=1.2)
     demo_parser.set_defaults(func=cmd_demo)
+
+    fetch_parser = subparsers.add_parser(
+        "fetch", help="Download real draw archives and weather history")
+    fetch_parser.add_argument("--game", choices=sorted(GAMES),
+                              help="Just this game (default: all four)")
+    fetch_parser.add_argument("--weather", action="store_true",
+                              help="Also download daily weather history")
+    fetch_parser.add_argument("--from", dest="start", metavar="YYYY-MM-DD",
+                              help="Weather start date (default 2015-01-01)")
+    fetch_parser.add_argument("--latitude", type=float, default=51.5072)
+    fetch_parser.add_argument("--longitude", type=float, default=-0.1276)
+    fetch_parser.add_argument("--weather-path", default="data/weather.csv")
+    fetch_parser.set_defaults(func=cmd_fetch)
+
+    bias_parser = subparsers.add_parser(
+        "bias", help="Test whether the balls are drawn evenly")
+    bias_parser.add_argument("--game", default="lotto", choices=sorted(GAMES))
+    bias_parser.add_argument("--draws", help="Override the archive path")
+    bias_parser.add_argument("--alpha", type=float, default=0.05)
+    bias_parser.add_argument("--show-counts", action="store_true")
+    bias_parser.set_defaults(func=cmd_bias)
+
+    suggest_parser = subparsers.add_parser(
+        "suggest", help="Suggest numbers to play, with an honest account of why")
+    suggest_parser.add_argument("--game", default="lotto", choices=sorted(GAMES))
+    suggest_parser.add_argument("--lines", type=int, default=5)
+    suggest_parser.add_argument("--draws", help="Override the archive path")
+    suggest_parser.add_argument("--alpha", type=float, default=0.05)
+    suggest_parser.add_argument("--seed", type=int, default=0,
+                                help="0 picks fresh lines each run")
+    suggest_parser.add_argument("--why", action="store_true",
+                                help="Explain each line")
+    suggest_parser.set_defaults(func=cmd_suggest)
+
+    games_parser = subparsers.add_parser("games", help="List the UK games and their odds")
+    games_parser.set_defaults(func=cmd_games)
 
     gui_parser = subparsers.add_parser(
         "gui", help="Open the point-and-click version in your browser")

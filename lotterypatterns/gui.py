@@ -16,7 +16,10 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from .bias import analyse_bonus_balls, analyse_main_balls
 from .draws import DrawHistory, simulate_biased_draws, simulate_draws
+from .games import GAMES, get_game
+from .picker import suggest
 from .features import FEATURES, select_features
 from .metrics import BUILTIN_METRICS, METRICS_BY_NAME, default_metrics, metric_from_csv
 from .search import METHODS, null_calibration, search
@@ -196,6 +199,94 @@ def _run_calibration(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _suggest_history(game, payload: dict[str, Any]) -> tuple[Any, str]:
+    """Find the best draw history available for this game, and say which it is.
+
+    Prefers the game's own downloaded archive. Falls back to whatever the panel
+    has loaded if it happens to be the same shape, and otherwise returns nothing
+    — in which case the picker runs with no bias evidence and says so.
+    """
+    from .fetch import FetchError, load_history
+    try:
+        history = load_history(game)
+        return history, f"the downloaded {game.name} archive ({len(history)} draws)"
+    except (FetchError, ValueError, KeyError):
+        pass
+    try:
+        history = _history_from_payload(payload)
+    except SearchError:
+        return None, "no draw history"
+    if history.pool == game.pool and history.picks == game.picks:
+        return history, f"the loaded draws ({len(history)}), which match this game's shape"
+    return None, (f"no {game.name} archive — the loaded draws are "
+                  f"{history.picks} of {history.pool}, not {game.picks} of {game.pool}")
+
+
+def _run_suggest(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        game = get_game(payload.get("game", "lotto"))
+    except KeyError as exc:
+        raise SearchError(str(exc)) from exc
+    lines = max(1, min(int(payload.get("lines", 5)), 20))
+
+    history, source_note = _suggest_history(game, payload)
+    main = analyse_main_balls(history) if history is not None else None
+    bonus = analyse_bonus_balls(history, game) if history is not None else None
+
+    result = suggest(game, count=lines, bias_report=main, bonus_bias=bonus,
+                     draws_analysed=len(history) if history is not None else 0,
+                     seed=payload.get("seed") or None)
+
+    return {
+        "game": game.name,
+        "game_key": game.key,
+        "bonus_name": game.bonus_name,
+        "odds": game.jackpot_odds,
+        "top_prize": game.top_prize,
+        "shared_jackpot": result.shared_jackpot,
+        "data_source": source_note,
+        "draws_analysed": result.draws_analysed,
+        "bias_found": result.bias_found,
+        "bias_notes": result.evidence_notes,
+        "bias_summary": main.summary() if main is not None else None,
+        "chi_square_p": main.chi_square_p if main is not None else None,
+        "improvement_pct": result.improvement_pct,
+        "tickets": [
+            {"numbers": list(t.numbers), "bonus": list(t.bonus),
+             "share_index": t.share_index, "reasons": list(t.reasons)}
+            for t in result.tickets
+        ],
+        "summary": result.summary(),
+    }
+
+
+def _run_bias(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        game = get_game(payload.get("game", "lotto"))
+    except KeyError as exc:
+        raise SearchError(str(exc)) from exc
+    history, source_note = _suggest_history(game, payload)
+    if history is None:
+        raise SearchError(
+            f"There is {source_note}. Download it first in Terminal with:  "
+            f"python3 -m lotterypatterns fetch --game {game.key}")
+    main = analyse_main_balls(history)
+    bonus = analyse_bonus_balls(history, game)
+    return {
+        "game": game.name,
+        "data_source": source_note,
+        "draws": len(history),
+        "chi_square": main.chi_square,
+        "chi_square_p": main.chi_square_p,
+        "is_biased": main.is_biased,
+        "summary": main.summary(),
+        "bonus_summary": bonus.summary() if bonus is not None else None,
+        "counts": [{"number": b.number, "observed": b.observed,
+                    "expected": b.expected, "q_value": b.q_value}
+                   for b in main.balls],
+    }
+
+
 def _options() -> dict[str, Any]:
     return {
         "features": [{"name": f.name, "description": f.description} for f in FEATURES],
@@ -209,6 +300,11 @@ def _options() -> dict[str, Any]:
             {"name": "mutual_info", "label": "Mutual information",
              "description": "Catches lumpy, non-straight patterns. Much slower."},
         ],
+        "games": [{"key": g.key, "name": g.name, "pool": g.pool, "picks": g.picks,
+                   "bonus_name": g.bonus_name, "bonus_picks": g.bonus_picks,
+                   "odds": g.jackpot_odds, "top_prize": g.top_prize,
+                   "shared": "not shared" not in g.top_prize.lower()}
+                  for g in GAMES.values()],
         "today": date.today().isoformat(),
     }
 
@@ -216,6 +312,8 @@ def _options() -> dict[str, Any]:
 ROUTES = {
     "/api/search": _run_search,
     "/api/calibrate": _run_calibration,
+    "/api/suggest": _run_suggest,
+    "/api/bias": _run_bias,
 }
 
 

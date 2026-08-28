@@ -109,6 +109,19 @@ tr.ctrl { opacity: .68; }
   border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite;
   vertical-align: -1px; margin-right: 7px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.ticket { display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
+  padding: 11px 0; border-bottom: 1px solid var(--line); }
+.ticket:last-of-type { border-bottom: none; }
+.ball { width: 40px; height: 40px; border-radius: 50%; display: grid;
+  place-items: center; font-weight: 700; font-size: 16px;
+  background: var(--accent); color: #fff; font-variant-numeric: tabular-nums; }
+.ball.extra { background: var(--warn); }
+.plus { color: var(--muted); font-weight: 700; margin: 0 2px; }
+.tno { color: var(--muted); font-size: 13px; width: 22px; }
+.why { font-size: 12.5px; color: var(--muted); margin: 3px 0 0 22px; }
+.note { border-left: 3px solid var(--accent); padding: 10px 14px; margin: 14px 0 0;
+  background: var(--bg); border-radius: 0 8px 8px 0; font-size: 13.5px; }
+.note b { color: var(--ink); }
 .legend { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
 code { font-family: var(--mono); font-size: 12.5px; background: var(--bg);
   padding: 1px 5px; border-radius: 4px; }
@@ -200,6 +213,19 @@ code { font-family: var(--mono); font-size: 12.5px; background: var(--bg);
     </details>
   </div>
 
+  <div class="panel">
+    <div class="step">Step 4</div>
+    <h2>Suggest numbers to play</h2>
+    <p class="hint">Uses the downloaded archive for the game if you have one.
+       Read what it says about odds — it will not lie to you about them.</p>
+    <label class="field">Game</label>
+    <select id="game"></select>
+    <label class="field">How many lines</label>
+    <input type="number" id="lines" value="5" min="1" max="20">
+    <button id="suggest" style="width:100%;margin-top:12px">Suggest my numbers</button>
+    <button id="biasbtn" style="width:100%;margin-top:8px">Are the balls drawn evenly?</button>
+  </div>
+
   <button class="primary" id="run">Run the search</button>
   <button id="calibrate" style="width:100%;margin-top:9px">Second opinion: what does it find in
     games with nothing in them?</button>
@@ -271,6 +297,13 @@ async function loadOptions() {
     body.append(title, el('span', '', m.description));
     lab.append(cb, body); box.append(lab);
   });
+  const games = $('#game');
+  (OPTIONS.games || []).forEach(g => {
+    const o = el('option', '', `${g.name} — ${g.picks} of ${g.pool}` +
+      (g.bonus_picks ? ` + ${g.bonus_name}` : ''));
+    o.value = g.key;
+    games.append(o);
+  });
   const planted = $('#planted');
   OPTIONS.metrics.filter(m => !m.is_control).forEach(m => {
     const o = el('option', '', m.name.replace(/_/g, ' ')); o.value = m.name;
@@ -303,6 +336,8 @@ function payload() {
     count: +$('#count').value, seed: +$('#seed').value,
     lags: $('#lags').value, alpha: +$('#alpha').value,
     planted_metric: $('#planted').value, strength: +$('#strength').value,
+    game: $('#game') ? $('#game').value : 'lotto',
+    lines: $('#lines') ? +$('#lines').value : 5,
     metrics: [...document.querySelectorAll('#metrics input:checked')].map(b => b.value),
     methods: [...document.querySelectorAll('#methods input:checked')].map(b => b.value),
   };
@@ -452,6 +487,73 @@ function renderCalibration(d) {
   panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+function renderSuggestion(d) {
+  const out = $('#out');
+  const placeholder = out.querySelector('.empty');
+  if (placeholder) placeholder.remove();
+  const panel = el('div', 'panel');
+  panel.style.borderColor = 'var(--accent)';
+  panel.append(el('h2', '', `${d.game} — ${d.tickets.length} suggested ` +
+    `line${d.tickets.length > 1 ? 's' : ''}`));
+  panel.append(el('p', 'hint', `Based on ${d.data_source}.`));
+
+  d.tickets.forEach((t, i) => {
+    const row = el('div', 'ticket');
+    row.append(el('div', 'tno', (i + 1) + '.'));
+    t.numbers.forEach(n => row.append(el('div', 'ball', n)));
+    if (t.bonus && t.bonus.length) {
+      row.append(el('div', 'plus', '+'));
+      t.bonus.forEach(n => row.append(el('div', 'ball extra', n)));
+    }
+    panel.append(row);
+    if (t.reasons.length)
+      panel.append(el('div', 'why', t.reasons.join(' · ')));
+  });
+
+  const odds = el('div', 'note');
+  odds.innerHTML = `<b>Your odds are 1 in ${d.odds.toLocaleString()}.</b> These picks do
+    not change that, and nothing could — every combination is equally likely.`;
+  panel.append(odds);
+
+  const bias = el('div', 'note');
+  bias.innerHTML = d.bias_found
+    ? `<b>The balls are not coming up evenly.</b> ${d.bias_notes.join('; ')}.
+       These picks are tilted toward that. Confirm it on newer draws first.`
+    : `<b>The balls come up evenly</b> (evenness test p =
+       ${d.chi_square_p === null ? 'n/a' : (+d.chi_square_p).toFixed(3)}), so no number is
+       "hot", "cold" or "due". Those labels describe noise.`;
+  panel.append(bias);
+
+  const value = el('div', 'note');
+  value.innerHTML = d.shared_jackpot
+    ? `<b>What these picks actually buy you:</b> they avoid heavily-played
+       combinations, so they expect about ${d.improvement_pct.toFixed(0)}% less
+       jackpot-sharing than an average ticket. Same chance of winning — a bigger
+       cheque if you do. Most players pick birthdays, which is why numbers over 31
+       are worth having.`
+    : `<b>Sharing is not a factor for ${d.game}:</b> ${d.top_prize}. So these are
+       simply a fair random pick, which is exactly as good as any other line here.`;
+  panel.append(value);
+  out.prepend(panel);
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderBias(d) {
+  const out = $('#out');
+  const placeholder = out.querySelector('.empty');
+  if (placeholder) placeholder.remove();
+  const panel = el('div', 'panel');
+  panel.style.borderColor = d.is_biased ? 'var(--warn)' : 'var(--good)';
+  panel.append(el('h2', '', `${d.game}: are the balls drawn evenly?`));
+  panel.append(el('p', 'hint', `${d.draws.toLocaleString()} draws, from ${d.data_source}.`));
+  const pre = el('pre');
+  pre.style.cssText = 'white-space:pre-wrap;font-size:13px;margin:0;font-family:var(--mono)';
+  pre.textContent = d.summary + (d.bonus_summary ? '\n\n' + d.bonus_summary : '');
+  panel.append(pre);
+  out.prepend(panel);
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function showError(msg) {
   const out = $('#out');
   out.textContent = '';
@@ -476,6 +578,11 @@ async function call(url, btn, busyText, onOK) {
     btn.disabled = false; btn.textContent = original;
   }
 }
+
+$('#suggest').addEventListener('click', () =>
+  call('/api/suggest', $('#suggest'), 'Picking…', renderSuggestion));
+$('#biasbtn').addEventListener('click', () =>
+  call('/api/bias', $('#biasbtn'), 'Testing…', renderBias));
 
 $('#run').addEventListener('click', () =>
   call('/api/search', $('#run'), 'Searching…', renderSearch));

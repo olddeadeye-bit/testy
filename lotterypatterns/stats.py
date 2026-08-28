@@ -280,3 +280,88 @@ def benjamini_hochberg(p_values: Sequence[float]) -> list[float]:
 def expected_false_positives(n_tests: int, alpha: float) -> float:
     """How many tests a pile of pure noise would flag at this threshold."""
     return n_tests * alpha
+
+
+# --------------------------------------------------------------------------
+# Chi-square, for testing whether a set of balls is drawn evenly
+# --------------------------------------------------------------------------
+
+def _lower_gamma_series(a: float, x: float, *, max_iter: int = 500,
+                        epsilon: float = 3e-16) -> float:
+    """Series expansion for the regularised lower incomplete gamma P(a, x)."""
+    if x <= 0:
+        return 0.0
+    term = 1.0 / a
+    total = term
+    n = a
+    for _ in range(max_iter):
+        n += 1.0
+        term *= x / n
+        total += term
+        if abs(term) < abs(total) * epsilon:
+            break
+    return total * math.exp(-x + a * math.log(x) - math.lgamma(a))
+
+
+def _upper_gamma_cf(a: float, x: float, *, max_iter: int = 500,
+                    epsilon: float = 3e-16) -> float:
+    """Continued fraction for the regularised upper incomplete gamma Q(a, x)."""
+    tiny = 1e-300
+    b = x + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / b
+    h = d
+    for i in range(1, max_iter + 1):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        if abs(d) < tiny:
+            d = tiny
+        c = b + an / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < epsilon:
+            break
+    return h * math.exp(-x + a * math.log(x) - math.lgamma(a))
+
+
+def chi_square_sf(statistic: float, df: int) -> float:
+    """Probability of a chi-square at least this large under the null."""
+    if df <= 0:
+        return 1.0
+    if statistic <= 0:
+        return 1.0
+    a, x = df / 2.0, statistic / 2.0
+    if x < a + 1.0:
+        return max(0.0, min(1.0, 1.0 - _lower_gamma_series(a, x)))
+    return max(0.0, min(1.0, _upper_gamma_cf(a, x)))
+
+
+def chi_square_uniform(counts: Sequence[int]) -> Association:
+    """Test whether counts came from a uniform distribution.
+
+    This is the test that matters for a lottery: if one ball really does come
+    up more than the others, an even-draw hypothesis should fail here.
+    """
+    n = len(counts)
+    total = sum(counts)
+    if n < 2 or total == 0:
+        return Association(0.0, 1.0, total, "chi_square")
+    expected = total / n
+    statistic = sum((c - expected) ** 2 / expected for c in counts)
+    return Association(statistic, chi_square_sf(statistic, n - 1), total, "chi_square")
+
+
+def binomial_z_test(successes: int, trials: int, probability: float) -> Association:
+    """Normal-approximation test for one ball appearing more often than it should."""
+    if trials <= 0 or not 0.0 < probability < 1.0:
+        return Association(0.0, 1.0, trials, "binomial_z")
+    expected = trials * probability
+    sd = math.sqrt(trials * probability * (1.0 - probability))
+    if sd == 0:
+        return Association(0.0, 1.0, trials, "binomial_z")
+    z = (successes - expected) / sd
+    return Association(z, normal_sf(z), trials, "binomial_z")

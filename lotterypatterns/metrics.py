@@ -22,15 +22,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Callable, Sequence
 
+from . import astro
+
 _EPOCH = date(2000, 1, 1)
-# Reference new moon: 2000-01-06 18:14 UTC, expressed in days from _EPOCH.
-_NEW_MOON_REF = 5.76
 _SYNODIC_MONTH = 29.530588853
-_ANOMALISTIC_MONTH = 27.554549878
 _TROPICAL_YEAR = 365.242190
-# Mercury's synodic period; reference retrograde midpoint 2000-02-21.
-_MERCURY_SYNODIC = 115.8775
-_MERCURY_REF = 51.0
 # Solar cycle 24 minimum, December 2008, and the mean cycle length.
 _SOLAR_MIN_REF = (date(2008, 12, 1) - _EPOCH).days
 _SOLAR_CYCLE_DAYS = 11.0 * 365.25
@@ -73,42 +69,97 @@ def _m(name: str, description: str, units: str = ""):
 
 @_m("moon_illumination", "Fraction of the Moon's disc lit, 0 new to 1 full", "fraction")
 def moon_illumination(when: date) -> float:
-    phase = ((_days(when) - _NEW_MOON_REF) % _SYNODIC_MONTH) / _SYNODIC_MONTH
-    return (1.0 - math.cos(2 * math.pi * phase)) / 2.0
+    return astro.moon_illuminated_fraction(when)
 
 
 @_m("moon_age", "Days since the last new moon", "days")
 def moon_age(when: date) -> float:
-    return (_days(when) - _NEW_MOON_REF) % _SYNODIC_MONTH
+    return astro.moon_phase_angle(when) / 360.0 * _SYNODIC_MONTH
+
+
+@_m("moon_ecliptic_longitude",
+    "Where the Moon sits along the zodiac, 0 to 360 degrees", "degrees")
+def moon_ecliptic_longitude(when: date) -> float:
+    return astro.moon_longitude(when)
+
+
+@_m("moon_ecliptic_latitude",
+    "How far the Moon rides above or below the ecliptic", "degrees")
+def moon_ecliptic_latitude(when: date) -> float:
+    return astro.moon_latitude(when)
+
+
+@_m("moon_declination",
+    "Height of the Moon's path in the sky — swings over 18.6 years", "degrees")
+def moon_declination(when: date) -> float:
+    return astro.moon_declination(when)
+
+
+@_m("moon_distance", "Earth-Moon distance, perigee ~356,500 km to apogee ~406,700",
+    "km")
+def moon_distance(when: date) -> float:
+    return astro.moon_distance_km(when)
 
 
 @_m("lunar_distance_phase",
     "Phase of the anomalistic month, 0 at perigee — the 'supermoon' clock", "fraction")
 def lunar_distance_phase(when: date) -> float:
-    phase = (_days(when) % _ANOMALISTIC_MONTH) / _ANOMALISTIC_MONTH
-    return (1.0 - math.cos(2 * math.pi * phase)) / 2.0
+    near, far = 356500.0, 406700.0
+    span = (astro.moon_distance_km(when) - near) / (far - near)
+    return max(0.0, min(1.0, 1.0 - span))
+
+
+@_m("moon_zodiac_sign", "Which of the twelve signs the Moon is in, 0 = Aries", "index")
+def moon_zodiac_sign(when: date) -> float:
+    return float(astro.zodiac_index(astro.moon_longitude(when)))
+
+
+@_m("lunar_node", "Longitude of the Moon's ascending node — the eclipse points",
+    "degrees")
+def lunar_node(when: date) -> float:
+    return astro.lunar_node_longitude(when)
 
 
 @_m("tidal_force",
-    "Crude combined solar and lunar tidal index — springs high, neaps low", "index")
+    "Tide-raising force of Sun and Moon combined, from their true positions", "index")
 def tidal_force(when: date) -> float:
-    lunar = 2 * math.pi * ((_days(when) - _NEW_MOON_REF) % _SYNODIC_MONTH) / _SYNODIC_MONTH
-    return abs(math.cos(lunar)) + 0.46 * abs(math.cos(2 * lunar))
+    # Tidal force falls off as the cube of distance; the Sun contributes about
+    # 46% of the Moon's pull at mean distance.
+    distance = astro.moon_distance_km(when)
+    lunar = (385000.56 / distance) ** 3
+    alignment = abs(math.cos(astro.moon_phase_angle(when) * math.pi / 180.0))
+    return lunar * (1.0 + 0.46 * alignment)
+
+
+@_m("sun_ecliptic_longitude",
+    "Where the Sun sits along the zodiac — this is the time of year", "degrees")
+def sun_ecliptic_longitude(when: date) -> float:
+    return astro.sun_longitude(when)
 
 
 @_m("solar_declination", "Declination of the Sun — the seasons, in degrees", "degrees")
 def solar_declination(when: date) -> float:
-    day_of_year = when.timetuple().tm_yday
-    return -23.44 * math.cos(2 * math.pi * (day_of_year + 10) / 365.25)
+    return astro.sun_declination(when)
+
+
+@_m("sun_zodiac_sign", "Which of the twelve signs the Sun is in, 0 = Aries", "index")
+def sun_zodiac_sign(when: date) -> float:
+    return float(astro.zodiac_index(astro.sun_longitude(when)))
 
 
 @_m("daylight_hours", "Hours of daylight at 51.5 deg N (London)", "hours")
 def daylight_hours(when: date) -> float:
-    decl = math.radians(solar_declination.fn(when))
-    lat = math.radians(51.5)
+    decl = math.radians(astro.sun_declination(when))
+    lat = math.radians(astro.LONDON_LAT)
     cos_h = -math.tan(lat) * math.tan(decl)
     cos_h = max(-1.0, min(1.0, cos_h))
     return 2 * math.degrees(math.acos(cos_h)) / 15.0
+
+
+@_m("sidereal_time",
+    "Sidereal time at London midnight — which constellations are overhead", "degrees")
+def sidereal_time(when: date) -> float:
+    return astro.local_sidereal_time(when)
 
 
 @_m("sunspot_cycle_phase",
@@ -118,12 +169,40 @@ def sunspot_cycle_phase(when: date) -> float:
     return (1.0 - math.cos(2 * math.pi * phase)) / 2.0
 
 
-@_m("mercury_retrograde",
-    "1 while Mercury is apparently retrograde, 0 otherwise (approximate)", "boolean")
-def mercury_retrograde(when: date) -> float:
-    offset = (_days(when) - _MERCURY_REF) % _MERCURY_SYNODIC
-    half_window = 10.5
-    return 1.0 if min(offset, _MERCURY_SYNODIC - offset) <= half_window else 0.0
+def _planet_longitude_metric(planet: str) -> None:
+    _m(f"{planet}_longitude", f"Geocentric ecliptic longitude of {planet.title()}",
+       "degrees")(lambda when, _p=planet: astro.planet_longitude(_p, when))
+
+
+def _planet_retrograde_metric(planet: str) -> None:
+    _m(f"{planet}_retrograde",
+       f"1 while {planet.title()} is apparently moving backwards, else 0",
+       "boolean")(lambda when, _p=planet: astro.planet_is_retrograde(_p, when))
+
+
+def _planet_elongation_metric(planet: str) -> None:
+    _m(f"{planet}_elongation",
+       f"Angle between {planet.title()} and the Sun as seen from Earth", "degrees")(
+        lambda when, _p=planet: astro.planet_elongation(_p, when))
+
+
+for _planet in ("mercury", "venus", "mars", "jupiter", "saturn"):
+    _planet_longitude_metric(_planet)
+for _planet in ("mercury", "venus", "mars"):
+    _planet_retrograde_metric(_planet)
+for _planet in ("mercury", "venus", "mars", "jupiter"):
+    _planet_elongation_metric(_planet)
+
+
+def _star_altitude_metric(star: str) -> None:
+    _m(f"{star}_altitude",
+       f"Height of {star.title()} above the London horizon at midnight; "
+       "negative means below it", "degrees")(
+        lambda when, _s=star: astro.star_altitude(_s, when))
+
+
+for _star in ("sirius", "betelgeuse", "vega", "arcturus", "antares", "aldebaran"):
+    _star_altitude_metric(_star)
 
 
 @_m("day_of_week", "Monday 0 through Sunday 6", "index")
