@@ -8,6 +8,8 @@ from datetime import date
 
 from .bias import analyse_bonus_balls, analyse_main_balls
 from .draws import DrawHistory, simulate_biased_draws, simulate_draws
+from .fetch import FetchError
+from .weather import WeatherError
 from .games import GAMES, get_game
 from .picker import plan_upcoming, suggest
 from .features import FEATURES, select_features
@@ -75,7 +77,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                         help="Lags in draws, e.g. '0,1,5' or '0-3' (default 0-3)")
     parser.add_argument("--methods", nargs="*", default=["pearson", "spearman"],
                         choices=sorted(METHODS), help="Association measures to apply")
-    parser.add_argument("--alpha", type=float, default=0.05)
+    parser.add_argument("--alpha", type=_alpha, default=0.05)
     parser.add_argument("--seed", type=int, default=0)
 
 
@@ -292,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser.add_argument("--simulate", type=int, default=500)
     demo_parser.add_argument("--pool", type=int, default=59)
     demo_parser.add_argument("--lags", default="0-1")
-    demo_parser.add_argument("--alpha", type=float, default=0.05)
+    demo_parser.add_argument("--alpha", type=_alpha, default=0.05)
     demo_parser.add_argument("--seed", type=int, default=0)
     demo_parser.add_argument("--planted-metric", default="moon_illumination",
                              choices=sorted(METRICS_BY_NAME))
@@ -316,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
         "bias", help="Test whether the balls are drawn evenly")
     bias_parser.add_argument("--game", default="lotto", choices=sorted(GAMES))
     bias_parser.add_argument("--draws", help="Override the archive path")
-    bias_parser.add_argument("--alpha", type=float, default=0.05)
+    bias_parser.add_argument("--alpha", type=_alpha, default=0.05)
     bias_parser.add_argument("--show-counts", action="store_true")
     bias_parser.set_defaults(func=cmd_bias)
 
@@ -325,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     suggest_parser.add_argument("--game", default="lotto", choices=sorted(GAMES))
     suggest_parser.add_argument("--lines", type=int, default=5)
     suggest_parser.add_argument("--draws", help="Override the archive path")
-    suggest_parser.add_argument("--alpha", type=float, default=0.05)
+    suggest_parser.add_argument("--alpha", type=_alpha, default=0.05)
     suggest_parser.add_argument("--seed", type=int, default=0,
                                 help="0 picks fresh lines each run")
     suggest_parser.add_argument("--why", action="store_true",
@@ -370,10 +372,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _alpha(raw: str) -> float:
+    """A significance threshold is a probability, so it lives strictly in (0, 1)."""
+    value = float(raw)
+    if not 0.0 < value < 1.0:
+        raise argparse.ArgumentTypeError(
+            f"alpha must be between 0 and 1 (got {value}); 0.05 is the usual choice")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
+    except (FetchError, WeatherError, ValueError, KeyError) as exc:
+        # These carry a message written for a person, and say what to do next.
+        # A traceback on top of it helps nobody.
+        print(str(exc).strip("'"), file=sys.stderr)
+        return 1
+    except FileNotFoundError as exc:
+        print(f"No such file: {exc.filename}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped.", file=sys.stderr)
+        return 130
     except BrokenPipeError:
         # Someone piped us into `head`; that is not an error.
         sys.stdout = None  # type: ignore[assignment]
