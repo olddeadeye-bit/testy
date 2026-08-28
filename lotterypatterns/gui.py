@@ -19,7 +19,7 @@ from typing import Any
 from .bias import analyse_bonus_balls, analyse_main_balls
 from .draws import DrawHistory, simulate_biased_draws, simulate_draws
 from .games import GAMES, get_game
-from .picker import suggest
+from .picker import plan_upcoming, suggest
 from .features import FEATURES, select_features
 from .metrics import BUILTIN_METRICS, METRICS_BY_NAME, default_metrics, metric_from_csv
 from .search import METHODS, null_calibration, search
@@ -260,6 +260,90 @@ def _run_suggest(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """Dated lines for the next real draws, with the evidence behind them."""
+    try:
+        game = get_game(payload.get("game", "lotto"))
+    except KeyError as exc:
+        raise SearchError(str(exc)) from exc
+    lines = max(1, min(int(payload.get("lines", 2)), 10))
+    ahead = max(1, min(int(payload.get("draws_ahead", 2)), 6))
+
+    history, source_note = _suggest_history(game, payload)
+    if history is None:
+        raise SearchError(
+            f"There is {source_note}. Download it in Terminal with:  "
+            f"python3 -m lotterypatterns fetch --game {game.key}")
+
+    plan = plan_upcoming(game, history, lines_per_draw=lines, draws_ahead=ahead,
+                         seed=payload.get("seed") or None,
+                         run_patterns=bool(payload.get("patterns", True)),
+                         run_backtest=bool(payload.get("backtest", False)))
+    return {
+        "game": game.name,
+        "bonus_name": game.bonus_name,
+        "odds": game.jackpot_odds,
+        "top_prize": game.top_prize,
+        "shared_jackpot": plan.shared_jackpot,
+        "data_source": source_note,
+        "draws_analysed": plan.draws_analysed,
+        "date_range": plan.date_range,
+        "bias_found": plan.bias_found,
+        "bias_notes": plan.evidence_notes,
+        "pattern_notes": plan.pattern_notes,
+        "backtest_note": plan.backtest_note,
+        "improvement_pct": plan.improvement_pct,
+        "slips": [
+            {"label": slip.draw_label, "date": slip.draw_date,
+             "days_away": slip.days_away,
+             "tickets": [{"numbers": list(t.numbers), "bonus": list(t.bonus),
+                          "reasons": list(t.reasons)} for t in slip.tickets]}
+            for slip in plan.slips
+        ],
+    }
+
+
+def _run_patterns(payload: dict[str, Any]) -> dict[str, Any]:
+    from .patterns import find_patterns
+    history = _history_from_payload(payload)
+    report = find_patterns(history, alpha=float(payload.get("alpha", 0.05)))
+    return {
+        "game": report.game,
+        "draws": report.draws,
+        "tests": len(report.findings),
+        "families": sorted({f.kind for f in report.findings}),
+        "notes": report.notes,
+        "survivors": [{"kind": f.kind, "label": f.label, "detail": f.detail,
+                       "p_value": f.p_value, "q_value": f.q_value}
+                      for f in report.survivors[:40]],
+        "strongest": [{"kind": f.kind, "label": f.label, "detail": f.detail,
+                       "p_value": f.p_value, "q_value": f.q_value}
+                      for f in report.strongest(12)],
+        "summary": report.summary(),
+    }
+
+
+def _run_backtest(payload: dict[str, Any]) -> dict[str, Any]:
+    from .backtest import backtest
+    history = _history_from_payload(payload)
+    try:
+        report = backtest(history, max_predictions=int(payload.get("predictions", 300)))
+    except ValueError as exc:
+        raise SearchError(str(exc)) from exc
+    return {
+        "game": report.game,
+        "predictions": report.predictions,
+        "trained_on": report.trained_on,
+        "results": [{"name": r.name, "observed": r.observed_per_line,
+                     "expected": r.expected_per_line, "edge_pct": r.edge_pct,
+                     "z": r.z_score, "p_value": r.p_value, "q_value": r.q_value,
+                     "beat_chance": r.beat_chance}
+                    for r in sorted(report.results, key=lambda r: -r.observed_per_line)],
+        "any_winner": any(r.beat_chance for r in report.results),
+        "summary": report.summary(),
+    }
+
+
 def _run_bias(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         game = get_game(payload.get("game", "lotto"))
@@ -313,6 +397,9 @@ ROUTES = {
     "/api/search": _run_search,
     "/api/calibrate": _run_calibration,
     "/api/suggest": _run_suggest,
+    "/api/plan": _run_plan,
+    "/api/patterns": _run_patterns,
+    "/api/backtest": _run_backtest,
     "/api/bias": _run_bias,
 }
 

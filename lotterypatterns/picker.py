@@ -276,3 +276,157 @@ def suggest(game: Game, *, count: int = 5, bias_report: BiasReport | None = None
     return Suggestion(game=game, tickets=tickets, draws_analysed=draws_analysed,
                       bias_found=bias_found, evidence_notes=notes,
                       average_share_index=average, shared_jackpot=shared)
+
+
+# --------------------------------------------------------------------------
+# Suggestions tied to a specific upcoming draw
+# --------------------------------------------------------------------------
+
+@dataclass
+class PlaySlip:
+    """Lines to play in one identified, dated draw."""
+
+    game: Game
+    draw_date: str
+    draw_label: str
+    tickets: list[Ticket]
+    days_away: int = 0
+
+    def format(self) -> str:
+        lines = [f"{self.game.name} — {self.draw_label}"
+                 + (" (tonight)" if self.days_away == 0 else
+                    f" (in {self.days_away} day{'s' if self.days_away != 1 else ''})"),
+                 "-" * 58]
+        for i, ticket in enumerate(self.tickets, 1):
+            lines.append(f"  {i}.  {ticket.format(self.game)}")
+        return "\n".join(lines)
+
+
+@dataclass
+class PlayPlan:
+    """Dated slips for the next draws, plus what the evidence actually was."""
+
+    slips: list[PlaySlip]
+    game: Game
+    draws_analysed: int
+    date_range: str = ""
+    bias_found: bool = False
+    evidence_notes: list[str] = field(default_factory=list)
+    pattern_notes: list[str] = field(default_factory=list)
+    backtest_note: str = ""
+    improvement_pct: float = 0.0
+    shared_jackpot: bool = True
+
+    def summary(self) -> str:
+        lines = []
+        for slip in self.slips:
+            lines.append(slip.format())
+            lines.append("")
+
+        lines.append("=" * 58)
+        lines.append(f"Analysed {self.draws_analysed:,} real {self.game.name} draws"
+                     + (f" ({self.date_range})" if self.date_range else "") + ".")
+        lines.append("")
+
+        if self.bias_found:
+            lines.append("BALL BIAS FOUND — these picks are tilted toward it:")
+            for note in self.evidence_notes:
+                lines.append(f"  - {note}")
+        else:
+            lines.append("BALL BIAS: none. Every ball comes up at the rate it should,")
+            lines.append("  so no number is due, hot or cold.")
+        lines.append("")
+
+        if self.pattern_notes:
+            lines.append("STRUCTURAL PATTERNS:")
+            for note in self.pattern_notes:
+                lines.append(f"  - {note}")
+        else:
+            lines.append("STRUCTURAL PATTERNS: none survived correction — no pairs,")
+            lines.append("  rhythms, machine effects or draw-to-draw dependence.")
+        lines.append("")
+
+        if self.backtest_note:
+            lines.append("WALK-FORWARD TEST:")
+            lines.append(f"  {self.backtest_note}")
+            lines.append("")
+
+        lines.append(f"ODDS: 1 in {self.game.jackpot_odds:,} per line. Unchanged by "
+                     "any of the above.")
+        if self.shared_jackpot:
+            lines.append(f"SHARING: these lines expect about {self.improvement_pct:.0f}% "
+                         "less jackpot-splitting than an average ticket.")
+        else:
+            lines.append(f"SHARING: not a factor — {self.game.top_prize.lower()}.")
+        return "\n".join(lines)
+
+
+def plan_upcoming(game: Game, history, *, lines_per_draw: int = 2,
+                  draws_ahead: int = 2, alpha: float = 0.05,
+                  seed: int | None = None, run_patterns: bool = True,
+                  run_backtest: bool = False, today=None) -> PlayPlan:
+    """Suggest lines for the next real draws, using every check available.
+
+    Runs the ball-evenness test, the structural pattern battery and optionally
+    a walk-forward test, then produces a dated slip per upcoming draw. Where
+    the evidence found something, the picks follow it; where it found nothing —
+    which is the usual outcome — the picks fall back to avoiding heavily-played
+    combinations.
+    """
+    from .bias import analyse_bonus_balls, analyse_main_balls
+    from .schedule import next_draws
+
+    main = analyse_main_balls(history, alpha=alpha)
+    bonus = analyse_bonus_balls(history, game, alpha=alpha)
+
+    pattern_notes: list[str] = []
+    if run_patterns:
+        from .patterns import find_patterns
+        report = find_patterns(history, alpha=alpha)
+        for finding in report.survivors[:6]:
+            pattern_notes.append(f"{finding.label} ({finding.detail}), q={finding.q_value:.3g}")
+
+    backtest_note = ""
+    if run_backtest:
+        from .backtest import backtest as run
+        try:
+            # Same settings as the standalone command, so the plan and
+            # `backtest` never disagree about the same history.
+            result = run(history)
+            best = result.best()
+            winners = [r for r in result.results if r.beat_chance]
+            if winners:
+                backtest_note = ("beat chance on held-out draws, surviving "
+                                 "correction across every strategy tried: "
+                                 + ", ".join(f"{r.name} ({r.edge_pct:+.1f}%)"
+                                             for r in winners))
+            elif best is not None:
+                backtest_note = (
+                    f"no strategy beat chance on {result.predictions} held-out "
+                    f"draws; best was {best.name} at {best.edge_pct:+.1f}% "
+                    f"(p={best.p_value:.3f}, q={best.q_value:.2f} — noise once "
+                    "corrected for trying several)")
+        except ValueError as exc:
+            backtest_note = f"not run: {exc}"
+
+    upcoming = next_draws(game, draws_ahead, today=today)
+    slips: list[PlaySlip] = []
+    improvement = 0.0
+    for offset, draw in enumerate(upcoming):
+        result = suggest(game, count=lines_per_draw, bias_report=main,
+                         bonus_bias=bonus, draws_analysed=len(history), alpha=alpha,
+                         seed=None if seed is None else seed + offset)
+        improvement = result.improvement_pct
+        slips.append(PlaySlip(game=game, draw_date=draw.draw_date.isoformat(),
+                              draw_label=draw.label, tickets=result.tickets,
+                              days_away=draw.days_away(today)))
+
+    _, evidence_notes = _evidence_weights(main, game.pool, alpha)
+    return PlayPlan(
+        slips=slips, game=game, draws_analysed=len(history),
+        date_range=f"{history.dates[0]} to {history.dates[-1]}" if len(history) else "",
+        bias_found=bool(evidence_notes), evidence_notes=evidence_notes,
+        pattern_notes=pattern_notes, backtest_note=backtest_note,
+        improvement_pct=improvement,
+        shared_jackpot="not shared" not in game.top_prize.lower(),
+    )

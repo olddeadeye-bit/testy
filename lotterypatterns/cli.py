@@ -9,7 +9,7 @@ from datetime import date
 from .bias import analyse_bonus_balls, analyse_main_balls
 from .draws import DrawHistory, simulate_biased_draws, simulate_draws
 from .games import GAMES, get_game
-from .picker import suggest
+from .picker import plan_upcoming, suggest
 from .features import FEATURES, select_features
 from .metrics import BUILTIN_METRICS, METRICS_BY_NAME, default_metrics, metric_from_csv
 from .search import METHODS, null_calibration, search
@@ -191,19 +191,46 @@ def cmd_bias(args: argparse.Namespace) -> int:
 
 
 def cmd_suggest(args: argparse.Namespace) -> int:
-    """Suggest lines to play, using whatever the analysis actually established."""
+    """Suggest lines for the next real draws, using everything the tests found."""
     game = get_game(args.game)
     history = _load_history(args)
-    main = analyse_main_balls(history, alpha=args.alpha)
-    bonus = analyse_bonus_balls(history, game, alpha=args.alpha)
-    result = suggest(game, count=args.lines, bias_report=main, bonus_bias=bonus,
-                     draws_analysed=len(history), alpha=args.alpha,
-                     seed=args.seed if args.seed else None)
-    print(result.summary())
-    if args.why:
+    plan = plan_upcoming(
+        game, history, lines_per_draw=args.lines, draws_ahead=args.draws_ahead,
+        alpha=args.alpha, seed=args.seed if args.seed else None,
+        run_patterns=not args.quick, run_backtest=args.backtest,
+    )
+    print(plan.summary())
+    if args.why and plan.slips:
         print("\nWhy each line:")
-        for i, ticket in enumerate(result.tickets, 1):
+        for i, ticket in enumerate(plan.slips[0].tickets, 1):
             print(f"  {i}. " + "; ".join(ticket.reasons))
+    return 0
+
+
+def cmd_patterns(args: argparse.Namespace) -> int:
+    """Run the structural pattern battery."""
+    from .patterns import find_patterns
+    history = _load_history(args)
+    report = find_patterns(history, alpha=args.alpha)
+    print(report.summary())
+    if args.kind:
+        print(f"\nEvery '{args.kind}' result, strongest first:")
+        for finding in report.by_kind(args.kind)[:args.top]:
+            print(f"  {finding}")
+    return 0
+
+
+def cmd_backtest(args: argparse.Namespace) -> int:
+    """Replay history and score each strategy on draws it had not seen."""
+    from .backtest import backtest
+    history = _load_history(args)
+    try:
+        report = backtest(history, train=args.train, step=args.step,
+                          max_predictions=args.predictions)
+    except ValueError as exc:
+        print(exc)
+        return 1
+    print(report.summary())
     return 0
 
 
@@ -303,7 +330,29 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="0 picks fresh lines each run")
     suggest_parser.add_argument("--why", action="store_true",
                                 help="Explain each line")
+    suggest_parser.add_argument("--draws-ahead", type=int, default=2,
+                                help="How many upcoming draws to cover (default 2)")
+    suggest_parser.add_argument("--backtest", action="store_true",
+                                help="Also walk history forward to test the strategies")
+    suggest_parser.add_argument("--quick", action="store_true",
+                                help="Skip the structural pattern battery")
     suggest_parser.set_defaults(func=cmd_suggest)
+
+    patterns_parser = subparsers.add_parser(
+        "patterns", help="Structural tests: pairs, rhythms, machines, dependence")
+    _add_common(patterns_parser)
+    patterns_parser.add_argument("--kind", help="Also list one family in full")
+    patterns_parser.add_argument("--top", type=int, default=20)
+    patterns_parser.set_defaults(func=cmd_patterns)
+
+    backtest_parser = subparsers.add_parser(
+        "backtest", help="Score strategies on draws they were not trained on")
+    _add_common(backtest_parser)
+    backtest_parser.add_argument("--train", type=int, default=None,
+                                 help="Draws to learn from before predicting")
+    backtest_parser.add_argument("--step", type=int, default=1)
+    backtest_parser.add_argument("--predictions", type=int, default=400)
+    backtest_parser.set_defaults(func=cmd_backtest)
 
     games_parser = subparsers.add_parser("games", help="List the UK games and their odds")
     games_parser.set_defaults(func=cmd_games)

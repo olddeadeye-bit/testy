@@ -83,31 +83,145 @@ instead: the *average* shape of a UK year. Those are labelled as climatology
 throughout, because a correlation with one of them is a correlation with the
 calendar and nothing more.
 
-## Suggesting numbers to play
+## Finding patterns in the draws themselves
+
+The metric search asks whether draws follow something outside them. This asks
+whether the draw sequence has structure *inside* it — which is where a real
+defect would actually show, because the mechanisms are physical rather than
+mystical:
 
 ```bash
-python3 -m lotterypatterns suggest --game lotto --lines 5 --why
-python3 -m lotterypatterns suggest --game thunderball --lines 5
+python3 -m lotterypatterns patterns --game lotto
 ```
 
-Read what it tells you, because it will not flatter you:
+Six families, every one corrected across the whole battery:
+
+| Family | What it asks |
+| --- | --- |
+| **pairs** | Do two numbers come up together more than the combinatorics allow? |
+| **positions** | Is the first ball out of the machine distributed like the last? |
+| **recency** | Do numbers sleep longer, or return sooner, than a geometric gap predicts? |
+| **machines** | Does one physical machine or ball set draw differently from another? |
+| **serial** | Does one draw carry information about the next? |
+| **periodicity** | Does any ball recur on a rhythm — every seventh draw, say? |
+
+**machines** is the most credible of the six. Operators publish which machine
+and which ball set produced each draw, and those are physical objects that
+wear. Ball sets have been retired over exactly this. The test checks each group
+for evenness *and* whether the groups differ from one another, which is the
+sharper question — a quirk shared by every machine would cancel out in the
+per-group tests.
+
+The battery has been checked in both directions, which is the only way to trust
+it. Planted a pair into 1,500 draws and it came back:
 
 ```
-  1.  25  38  41  51  54  57
-  2.  36  39  41  42  49  55
-
-Based on 2,000 real draws.
-
-BALL BIAS: none. The balls come up evenly, so no number is any likelier
-than another.
-
-YOUR ODDS: 1 in 45,057,474. These picks do not change that, and nothing could.
-
-WHAT THESE PICKS ACTUALLY BUY YOU:
-  They avoid heavily-played combinations, so they expect about 54% less
-  jackpot-sharing than an average ticket.
-  Same chance of winning. A bigger cheque if you do.
+* [pairs]   12 and 44: p=0 q=0 — 398 together vs 13.2 expected
+* [recency] ball 12 return time: average gap 2.9 draws vs 9.8 expected
 ```
+
+Planted a bias into one of two machines and it named the machine:
+
+```
+* [machines]    machine Merlin evenness: stat=+687.5 p=1.9e-108
+* [periodicity] ball 38 every 2 draws: 361 appearances, concentration 0.612
+```
+
+## Does any of it actually predict anything?
+
+This is the question that separates a pattern-finding tool from data-dredging,
+and it has a definite answer, obtainable by replaying history:
+
+```bash
+python3 -m lotterypatterns backtest --game lotto
+```
+
+Stand at draw N knowing only draws 1..N-1. Make a pick. Score it against what
+actually came out. Repeat to the present. Under fair draws every strategy
+scores the same — the expected matches per line is `picks x picks / pool`,
+0.6102 for Lotto, no matter how the numbers were chosen.
+
+```
+strategy                 actual by chance      edge       z         p         q
+------------------------------------------------------------------------------
+hot numbers              0.7308    0.6102   +19.76%   +2.63  0.008624   0.06037
+overdue numbers          0.6500    0.6102    +6.53%   +0.87    0.3857    0.6749
+bias-weighted            0.6231    0.6102    +2.12%   +0.28    0.7786    0.8905
+random (baseline)        0.6038    0.6102    -1.04%   -0.14    0.8905    0.8905
+frequent pairs           0.5962    0.6102    -2.30%   -0.31    0.7602    0.8905
+unpopular (ours)         0.5692    0.6102    -6.71%   -0.89    0.3726    0.6749
+cold numbers             0.5615    0.6102    -7.97%   -1.06    0.2895    0.6749
+
+None of them beat chance.
+Looked like it at first glance: hot numbers (+19.8%, p=0.009) — but 7
+strategies were tried, and after correcting for that (the q column) it is noise.
+```
+
+That is the whole discipline in one table. "Hot numbers" beat chance by 19.8%
+with p=0.009, and it is still nothing, because seven strategies were tried and
+q says so.
+
+**And the test has teeth.** Given a machine with three genuinely over-weighted
+balls, it does not shrug:
+
+```
+hot numbers              1.1667    0.6102   +91.20%  +11.50  1.345e-30
+bias-weighted            1.1325    0.6102   +85.60%  +10.79  3.759e-27
+```
+
+So when it reports "nothing beat chance" on your real data, that is a
+measurement, not an assumption. `unpopular (ours)` is in the table on purpose:
+the strategy this package recommends does not beat chance either, because it
+was never meant to — it aims at a bigger share of a jackpot, not a better
+chance of one, and this test measures only the latter.
+
+Point it at your own ideas too — a strategy is any function from past draws to
+a line.
+
+## Suggesting numbers to play
+
+Suggestions are tied to specific upcoming draws — it knows Lotto runs Wednesday
+and Saturday, Thunderball Tuesday, Wednesday, Friday and Saturday, and rolls
+past tonight's draw once sales have closed:
+
+```bash
+python3 -m lotterypatterns suggest --game lotto --draws-ahead 2 --backtest
+python3 -m lotterypatterns suggest --game thunderball --lines 3
+```
+
+```
+Lotto — Saturday 29 August 2026 (in 1 day)
+----------------------------------------------------------
+  1.  24  33  35  42  49  59
+  2.  27  32  36  41  47  58
+
+Lotto — Wednesday 2 September 2026 (in 5 days)
+----------------------------------------------------------
+  1.  39  41  42  48  52  57
+  2.  35  41  46  47  51  55
+
+==========================================================
+Analysed 520 real Lotto draws (2019-01-02 to 2023-04-08).
+
+BALL BIAS: none. Every ball comes up at the rate it should,
+  so no number is due, hot or cold.
+
+STRUCTURAL PATTERNS: none survived correction — no pairs,
+  rhythms, machine effects or draw-to-draw dependence.
+
+WALK-FORWARD TEST:
+  no strategy beat chance on 260 held-out draws; best was hot numbers at
+  +19.8% (p=0.009, q=0.06 — noise once corrected for trying several)
+
+ODDS: 1 in 45,057,474 per line. Unchanged by any of the above.
+SHARING: these lines expect about 53% less jackpot-splitting than an average
+ticket.
+```
+
+Every line of that report is the output of a test that could have come back
+the other way. If the ball-evenness test finds a bias, the picks tilt toward
+it and the report says so. If the pattern battery finds structure, it is
+listed. If a strategy beats chance out of sample, it is named.
 
 **Why there is no such thing as a "due" number.** Draws are independent. The
 machine has no memory of what it did last week, so past draws cannot shift the
@@ -168,6 +282,12 @@ python3 -m lotterypatterns games
 
 # Are the balls drawn evenly?
 python3 -m lotterypatterns bias --game lotto --show-counts
+
+# Structural patterns: pairs, rhythms, machines, dependence
+python3 -m lotterypatterns patterns --game lotto --kind machines
+
+# Does any strategy beat chance on draws it has not seen?
+python3 -m lotterypatterns backtest --game lotto
 
 # Search a downloaded archive rather than a file path
 python3 -m lotterypatterns search --game lotto --lags 0-3
@@ -329,10 +449,16 @@ lotterypatterns/
   games.py      Lotto, Thunderball, EuroMillions, Set For Life
   fetch.py      Downloads the published draw archives
   bias.py       Chi-square test for whether the balls are drawn evenly
+  patterns.py   Pairs, positions, recency, machines, serial dependence, rhythms
+  backtest.py   Walk-forward testing — the one that decides if any of it works
+  schedule.py   When the next draws are
   picker.py     Number suggestions, and an honest account of their worth
-  cli.py        gui / search / suggest / bias / fetch / calibrate / demo / list / games
+  cli.py        gui / search / suggest / patterns / backtest / bias / fetch /
+                calibrate / demo / list / games
   gui.py        Local web server behind the browser interface
   static/       The single-page GUI
-tests/          121 tests, including positions checked against published ephemerides
+tests/          153 tests: positions against published ephemerides, and every
+                analysis checked both ways — quiet on fair draws, firing on
+                draws with something genuinely planted in them
 data/           Sample draw history and a sample external metric
 ```

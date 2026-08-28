@@ -220,10 +220,23 @@ code { font-family: var(--mono); font-size: 12.5px; background: var(--bg);
        Read what it says about odds — it will not lie to you about them.</p>
     <label class="field">Game</label>
     <select id="game"></select>
-    <label class="field">How many lines</label>
-    <input type="number" id="lines" value="5" min="1" max="20">
-    <button id="suggest" style="width:100%;margin-top:12px">Suggest my numbers</button>
+    <div class="row">
+      <div><label class="field">Lines per draw</label>
+        <input type="number" id="lines" value="2" min="1" max="10"></div>
+      <div><label class="field">Draws ahead</label>
+        <input type="number" id="ahead" value="2" min="1" max="6"></div>
+    </div>
+    <label class="check" style="margin-top:8px">
+      <input type="checkbox" id="dobacktest" checked>
+      <div><div>Test the strategies first</div>
+        <span>Replays history to check whether any method beats chance. Slower.</span></div>
+    </label>
+    <button id="suggest" style="width:100%;margin-top:10px">Suggest numbers for the
+      next draws</button>
     <button id="biasbtn" style="width:100%;margin-top:8px">Are the balls drawn evenly?</button>
+    <button id="patternbtn" style="width:100%;margin-top:8px">Find structural patterns</button>
+    <button id="backtestbtn" style="width:100%;margin-top:8px">Does any strategy beat
+      chance?</button>
   </div>
 
   <button class="primary" id="run">Run the search</button>
@@ -337,7 +350,9 @@ function payload() {
     lags: $('#lags').value, alpha: +$('#alpha').value,
     planted_metric: $('#planted').value, strength: +$('#strength').value,
     game: $('#game') ? $('#game').value : 'lotto',
-    lines: $('#lines') ? +$('#lines').value : 5,
+    lines: $('#lines') ? +$('#lines').value : 2,
+    draws_ahead: $('#ahead') ? +$('#ahead').value : 2,
+    backtest: $('#dobacktest') ? $('#dobacktest').checked : false,
     metrics: [...document.querySelectorAll('#metrics input:checked')].map(b => b.value),
     methods: [...document.querySelectorAll('#methods input:checked')].map(b => b.value),
   };
@@ -487,6 +502,146 @@ function renderCalibration(d) {
   panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+function renderPlan(d) {
+  const out = $('#out');
+  const placeholder = out.querySelector('.empty');
+  if (placeholder) placeholder.remove();
+  const panel = el('div', 'panel');
+  panel.style.borderColor = 'var(--accent)';
+  panel.append(el('h2', '', `${d.game} — numbers for the next ` +
+    `${d.slips.length} draw${d.slips.length > 1 ? 's' : ''}`));
+  panel.append(el('p', 'hint', `From ${d.data_source}` +
+    (d.date_range ? `, ${d.date_range}` : '') + '.'));
+
+  d.slips.forEach(slip => {
+    const head = el('div');
+    head.style.cssText = 'margin:16px 0 2px;font-weight:650;font-size:15px';
+    head.textContent = slip.label + (slip.days_away === 0 ? ' — tonight'
+      : ` — in ${slip.days_away} day${slip.days_away === 1 ? '' : 's'}`);
+    panel.append(head);
+    slip.tickets.forEach((t, i) => {
+      const row = el('div', 'ticket');
+      row.append(el('div', 'tno', (i + 1) + '.'));
+      t.numbers.forEach(n => row.append(el('div', 'ball', n)));
+      if (t.bonus && t.bonus.length) {
+        row.append(el('div', 'plus', '+'));
+        t.bonus.forEach(n => row.append(el('div', 'ball extra', n)));
+      }
+      panel.append(row);
+    });
+  });
+
+  const ev = el('div', 'note');
+  ev.innerHTML = `<b>Ball bias:</b> ` + (d.bias_found
+    ? `found — ${d.bias_notes.join('; ')}. These picks are tilted toward it.`
+    : `none. Every ball comes up at the rate it should, so no number is due,
+       hot or cold.`);
+  panel.append(ev);
+
+  const pat = el('div', 'note');
+  pat.innerHTML = `<b>Structural patterns:</b> ` + (d.pattern_notes.length
+    ? d.pattern_notes.join('; ')
+    : `none survived correction — no pairs, rhythms, machine effects or
+       draw-to-draw dependence.`);
+  panel.append(pat);
+
+  if (d.backtest_note) {
+    const bt = el('div', 'note');
+    bt.innerHTML = `<b>Walk-forward test:</b> ${d.backtest_note}`;
+    panel.append(bt);
+  }
+
+  const odds = el('div', 'note');
+  odds.innerHTML = `<b>Odds: 1 in ${d.odds.toLocaleString()} per line.</b> Unchanged
+    by any of the above. ` + (d.shared_jackpot
+    ? `What these picks do buy you: about ${d.improvement_pct.toFixed(0)}% less
+       jackpot-splitting than an average ticket.`
+    : `Sharing is not a factor here — ${d.top_prize}.`);
+  panel.append(odds);
+
+  out.prepend(panel);
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderPatterns(d) {
+  const out = $('#out');
+  const placeholder = out.querySelector('.empty');
+  if (placeholder) placeholder.remove();
+  const panel = el('div', 'panel');
+  const hit = d.survivors.length > 0;
+  panel.style.borderColor = hit ? 'var(--warn)' : 'var(--good)';
+  panel.append(el('h2', '', 'Structural patterns'));
+  panel.append(el('p', 'hint',
+    `${d.tests.toLocaleString()} tests across ${d.families.length} families ` +
+    `(${d.families.join(', ')}) on ${d.draws.toLocaleString()} draws. ` +
+    `Pairs, positions, return times, machines, draw-to-draw dependence and rhythms.`));
+  d.notes.forEach(n => panel.append(el('p', 'hint', '· ' + n)));
+
+  const rows = hit ? d.survivors : d.strongest;
+  const head = el('div');
+  head.style.cssText = 'font-weight:650;margin:12px 0 6px';
+  head.textContent = hit
+    ? `${d.survivors.length} survived correction`
+    : 'Nothing survived correction. Strongest results anyway — this is what chance produces:';
+  panel.append(head);
+
+  const scroll = el('div', 'scroll');
+  const table = el('table');
+  table.innerHTML = '<thead><tr><th>Family</th><th>Finding</th><th>Detail</th>' +
+    '<th style="text-align:right">p</th><th style="text-align:right">q</th></tr></thead>';
+  const tb = el('tbody');
+  rows.forEach(r => {
+    const tr = el('tr', r.q_value <= 0.05 ? 'survivor' : '');
+    tr.append(el('td', '', r.kind), el('td', '', r.label), el('td', '', r.detail),
+      el('td', 'num', fmt(r.p_value)), el('td', 'num q', fmt(r.q_value)));
+    tb.append(tr);
+  });
+  table.append(tb); scroll.append(table); panel.append(scroll);
+  out.prepend(panel);
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderBacktest(d) {
+  const out = $('#out');
+  const placeholder = out.querySelector('.empty');
+  if (placeholder) placeholder.remove();
+  const panel = el('div', 'panel');
+  panel.style.borderColor = d.any_winner ? 'var(--warn)' : 'var(--good)';
+  panel.append(el('h2', '', 'Does any strategy beat chance?'));
+  panel.append(el('p', 'hint',
+    `Each strategy predicted ${d.predictions.toLocaleString()} draws it had never ` +
+    `seen, learning only from the ${d.trained_on.toLocaleString()} before each one. ` +
+    'By chance every line matches ' + d.results[0].expected.toFixed(4) +
+    ' balls on average, however it was chosen.'));
+
+  const scroll = el('div', 'scroll');
+  const table = el('table');
+  table.innerHTML = '<thead><tr><th>Strategy</th>' +
+    '<th style="text-align:right">Matched</th><th style="text-align:right">Edge</th>' +
+    '<th style="text-align:right">p</th><th style="text-align:right">q</th></tr></thead>';
+  const tb = el('tbody');
+  d.results.forEach(r => {
+    const tr = el('tr', r.beat_chance ? 'survivor' : '');
+    tr.append(el('td', '', r.name), el('td', 'num', r.observed.toFixed(4)),
+      el('td', 'num', (r.edge_pct >= 0 ? '+' : '') + r.edge_pct.toFixed(1) + '%'),
+      el('td', 'num', fmt(r.p_value)), el('td', 'num q', fmt(r.q_value)));
+    tb.append(tr);
+  });
+  table.append(tb); scroll.append(table); panel.append(scroll);
+
+  const verdict = el('div', 'note');
+  verdict.innerHTML = d.any_winner
+    ? `<b>Something beat chance</b>, and it survived correction for the number of
+       strategies tried. Confirm it on later draws before staking anything on it.`
+    : `<b>Nothing beat chance.</b> Hot numbers, cold numbers, overdue numbers and
+       frequent pairs all landed on the same rate as picking at random — which is
+       what fair draws produce. The q column is the one that matters: several
+       strategies were tried, so one looking good at p&lt;0.05 is expected.`;
+  panel.append(verdict);
+  out.prepend(panel);
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function renderSuggestion(d) {
   const out = $('#out');
   const placeholder = out.querySelector('.empty');
@@ -580,7 +735,11 @@ async function call(url, btn, busyText, onOK) {
 }
 
 $('#suggest').addEventListener('click', () =>
-  call('/api/suggest', $('#suggest'), 'Picking…', renderSuggestion));
+  call('/api/plan', $('#suggest'), 'Analysing…', renderPlan));
+$('#patternbtn').addEventListener('click', () =>
+  call('/api/patterns', $('#patternbtn'), 'Testing…', renderPatterns));
+$('#backtestbtn').addEventListener('click', () =>
+  call('/api/backtest', $('#backtestbtn'), 'Replaying history…', renderBacktest));
 $('#biasbtn').addEventListener('click', () =>
   call('/api/bias', $('#biasbtn'), 'Testing…', renderBias));
 

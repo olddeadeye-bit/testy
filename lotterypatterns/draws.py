@@ -23,11 +23,19 @@ def _parse_date(raw: str) -> date:
 
 @dataclass(frozen=True)
 class Draw:
-    """One drawing: a date, the main balls, and any bonus balls."""
+    """One drawing: a date, the main balls, and any bonus balls.
+
+    ``machine`` and ``ball_set`` are recorded by the operator and published with
+    the results. They matter: a biased ball set or a misbehaving machine would
+    show up in one group and not the others, which is a real, testable pattern
+    rather than a numerological one.
+    """
 
     drawn_on: date
     numbers: tuple[int, ...]
     bonus: tuple[int, ...] = ()
+    machine: str = ""
+    ball_set: str = ""
 
     def __post_init__(self) -> None:
         if not self.numbers:
@@ -125,7 +133,11 @@ class DrawHistory(Sequence[Draw]):
         for row in rows:
             numbers = tuple(int(row[c]) for c in number_columns if row[c] not in (None, ""))
             bonus = tuple(int(row[c]) for c in bonus_columns if row.get(c) not in (None, ""))
-            draws.append(Draw(_parse_date(row[date_column]), numbers, bonus))
+            draws.append(Draw(
+                _parse_date(row[date_column]), numbers, bonus,
+                machine=(row.get("Machine") or row.get("machine") or "").strip(),
+                ball_set=(row.get("Ball Set") or row.get("ball_set") or "").strip(),
+            ))
         return cls(draws, pool=pool, picks=picks, name=name or path)
 
     def to_csv(self, path: str) -> None:
