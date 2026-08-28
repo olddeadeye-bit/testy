@@ -32,6 +32,19 @@ crooked machine too, `simulate_biased_draws` builds a history that genuinely
 does track a metric, so you can confirm the search has the power to detect a
 real effect at your sample size before trusting it to report an absence.
 
+## Quick start — no Terminal at all
+
+**Double-click `Start Lottery Tool.command` in the folder.**
+
+It checks Python is present, downloads the draw history the first time, and
+opens the app in your browser. A Terminal window appears and reports what it is
+doing; leave it open while you use the app, and close it to stop.
+
+If macOS says it cannot be opened because it is from an unidentified developer
+(this happens when the folder arrived as a downloaded ZIP rather than a `git
+clone`), right-click the file, choose **Open**, then **Open** again. That is
+needed once only.
+
 ## Quick start — the point-and-click version
 
 ```bash
@@ -438,6 +451,7 @@ from the 180 fake ones the sweep manufactures for free.
 ## Layout
 
 ```
+Start Lottery Tool.command   Double-click this
 lotterypatterns/
   draws.py      Draw, DrawHistory, CSV loading, fair and rigged simulators
   features.py   Per-draw features
