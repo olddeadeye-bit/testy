@@ -153,17 +153,21 @@ function makeFbm(seed, base, octaves, gain) {
 const SETTINGS_KEY = 'grassfield.settings.v1';
 
 function loadSettings(defaults) {
-  const s = Object.assign({}, defaults);
+  const s = Object.assign({ _touched: false }, defaults);
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const j = JSON.parse(raw);
       for (const k in defaults) if (k in j && typeof j[k] === typeof defaults[k]) s[k] = j[k];
+      s._touched = !!j._touched;
     }
   } catch (e) { /* private mode, blocked storage - defaults are fine */ }
   return s;
 }
 
 function saveSettings(s) {
+  /* Marks the settings as the user's own, so first-run device defaults
+     are applied once and never override a deliberate choice later. */
+  s._touched = true;
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch (e) {}
 }

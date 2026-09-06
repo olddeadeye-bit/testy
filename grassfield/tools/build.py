@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SRC = os.path.join(ROOT, 'src')
 OUT = os.path.join(ROOT, 'grassfield.html')
+OUT_ARTIFACT = os.path.join(ROOT, 'grassfield.artifact.html')
 
 SKY_JPG = os.path.join(ROOT, 'assets', 'sky.jpg')
 SKY_LIGHT = os.path.join(ROOT, 'assets', 'sky_light.json')
@@ -60,6 +61,18 @@ def main():
         f.write(shell)
     print('wrote %s (%.0f KB, %d source files)'
           % (OUT, os.path.getsize(OUT) / 1024.0, len(js_files)))
+
+    # A second flavour for hosting as an Artifact, which supplies its own
+    # <!doctype>/<head>/<body> and wants only the content. Same bytes
+    # otherwise - it is the standalone file with the document shell taken
+    # off, so the two cannot drift apart.
+    body = shell.split('<body>', 1)[1].rsplit('</body>', 1)[0]
+    title = re.search(r'<title>(.*?)</title>', shell, re.S).group(1)
+    art = ('<title>%s</title>\n<style>\n%s\n</style>\n%s'
+           % (title, css, body))
+    with open(OUT_ARTIFACT, 'w') as f:
+        f.write(art)
+    print('wrote %s (%.0f KB)' % (OUT_ARTIFACT, os.path.getsize(OUT_ARTIFACT) / 1024.0))
 
 
 if __name__ == '__main__':

@@ -51,6 +51,18 @@ const CONTROLS = [
 
 function boot() {
   const canvas = $('view');
+  /* A renderer that dies without saying why is just badly built. */
+  addEventListener('error', (e) => {
+    if (!window.__world && e && e.message) {
+      const n = document.getElementById('gateNote');
+      const lw = document.getElementById('loadWrap');
+      if (n && lw && !lw.hidden) {
+        lw.hidden = true;
+        n.innerHTML = 'Something threw while starting up.<br><br>' +
+          '<span style="opacity:.6">' + String(e.message) + '</span>';
+      }
+    }
+  });
   const gate = $('gate');
   const note = $('gateNote');
 
@@ -89,7 +101,20 @@ function boot() {
         return;
       }
       setProgress(100, 'ready');
-      start(world);
+      /* start() allocates every render target we own, and GL.target throws
+         if the driver will not give us one. Outside a try that exception
+         is uncaught, the Play button never appears, and all you get is a
+         progress bar that stops - which is exactly what it did. */
+      try {
+        start(world);
+      } catch (e) {
+        console.error(e);
+        fail('The renderer started but could not set itself up.',
+             String(e && e.message || e) +
+             '<br><br>This is usually the GPU refusing a render target. ' +
+             'Opening the file in a normal browser window (rather than a ' +
+             'preview pane) fixes it most of the time.');
+      }
     }, 30));
   };
   img.onerror = () => fail('The sky image did not load.');
@@ -114,7 +139,14 @@ function boot() {
     audio.setVolume(s.volume);
 
     world.resize();
-    addEventListener('resize', () => { world.resize(); compassDirty = true; });
+    let resizeT = 0;
+    addEventListener('resize', () => {
+      compassDirty = true;
+      /* Mobile browsers fire this every time the URL bar slides, and each
+         one would otherwise reallocate every render target we own. */
+      clearTimeout(resizeT);
+      resizeT = setTimeout(() => world.resize(), 180);
+    });
 
     /* A lost context is otherwise completely silent: the loop keeps
        running, every draw is a no-op, and all you see is a black screen. */
@@ -372,7 +404,16 @@ function boot() {
       syncPanel();
       toast('defaults restored');
     });
-    $('btnShot').addEventListener('click', screenshot);
+    if (!CAN_DOWNLOAD) $('btnShot').textContent = 'Photo mode (H)';
+    $('btnShot').addEventListener('click', () => {
+      if (!CAN_DOWNLOAD) {
+        world.settings.showHud = !world.settings.showHud;
+        applyHud(world.settings); saveSettings(world.settings);
+        togglePanel();
+        return;
+      }
+      screenshot();
+    });
     const diagBtn = $('btnDiag');
     if (diagBtn) diagBtn.addEventListener('click', () => {
       const text = diagnostics();
@@ -432,8 +473,17 @@ function boot() {
     toastT = setTimeout(() => t.classList.remove('show'), 1600);
   }
 
+  /* Hosted in a frame, a download link is inert - the viewer never grants
+     the page permission to hand you a file. Better to say so than to
+     claim the frame was saved and quietly do nothing. */
+  const CAN_DOWNLOAD = (() => { try { return window.self === window.top; } catch (e) { return false; } })();
+
   function screenshot() {
     if (!world) return;
+    if (!CAN_DOWNLOAD) {
+      toast('use your device\u2019s own screenshot here');
+      return;
+    }
     world.requestShot((blob) => {
       if (!blob) { toast('could not save the frame'); return; }
       const a = document.createElement('a');

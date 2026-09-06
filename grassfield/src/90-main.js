@@ -44,7 +44,18 @@ const DEFAULTS = {
   vramBudget: 160
 };
 
+/* A phone is not a small desktop: the GPU is tile-based, sustained load
+   gets thermally throttled within a minute, and the whole budget has to
+   come down by an order of magnitude rather than a notch. */
+const IS_PHONE = (() => {
+  try {
+    return matchMedia('(hover: none) and (pointer: coarse)').matches
+        && Math.min(screen.width, screen.height) < 820;
+  } catch (e) { return false; }
+})();
+
 const QUALITY_PRESETS = {
+  phone:  { renderScale: 0.60, density: 0.22, grassRange: 38, bloomLevels: 4, msaa: 1 },
   low:    { renderScale: 0.62, density: 0.35, grassRange: 70,  bloomLevels: 4, msaa: 1 },
   medium: { renderScale: 0.85, density: 0.65, grassRange: 100, bloomLevels: 5, msaa: 2 },
   high:   { renderScale: 1.00, density: 1.00, grassRange: 130, bloomLevels: 6, msaa: 4 },
@@ -60,6 +71,15 @@ class World {
     this.glw = new GL(canvas);
     const gl = this.glw.gl;
     this.settings = loadSettings(DEFAULTS);
+    if (IS_PHONE && !this.settings._touched) {
+      this.settings.quality = 'phone';
+      this.settings.grassRange = 38;
+      this.settings.density = 0.22;
+      this.settings.renderScale = 0.60;
+      this.settings.msaa = false;
+      this.settings.vramBudget = 64;
+      this.settings.trail = 12;
+    }
     if (SAFE_MODE) {
       /* this machine has already fallen over once - come back gently */
       this.settings.msaa = false;
@@ -629,7 +649,15 @@ class World {
     this.fwdXZ[0] = sy; this.fwdXZ[1] = -cy;
 
     const aspect = this.canvas.width / Math.max(this.canvas.height, 1);
-    const fovY = s.fov * DEG;
+    let fovY = s.fov * DEG;
+    if (aspect < 1.0) {
+      /* Held upright, a fixed vertical field of view collapses the
+         horizontal one - 68 degrees vertical on a phone leaves about 35
+         across, which is a letterbox slot. Widen until either the
+         horizontal view is reasonable or the vertical distortion is. */
+      const fromH = 2 * Math.atan(Math.tan(58 * DEG * 0.5) / aspect);
+      fovY = clamp(Math.max(fovY, fromH), fovY, 88 * DEG);
+    }
     M4.perspective(this.proj, fovY, aspect, 0.055, 26000);
     /* roll about the view axis: rotate the world up vector around forward */
     const upv = rotateAboutAxis([0, 1, 0], fwd, this.roll);
