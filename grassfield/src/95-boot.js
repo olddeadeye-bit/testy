@@ -17,7 +17,7 @@ const CONTROLS = [
   { grp: 'Field' },
   { k: 'wind',        label: 'Wind',               min: 0,    max: 1.6,  step: 0.01 },
   { k: 'groundLift',  label: 'Ground brightness',  min: 0.5,  max: 7.0,  step: 0.05 },
-  { k: 'sheen',       label: 'Leaf sheen',         min: 0,    max: 3.0,  step: 0.05 },
+  { k: 'sheen',       label: 'Leaf sheen',         min: 0,    max: 5.0,  step: 0.05 },
   { k: 'density',     label: 'Grass density',      min: 0.2,  max: 2.0,  step: 0.05 },
   { k: 'bladeHeight', label: 'Grass height',       min: 0.4,  max: 1.6,  step: 0.02, unit: ' m' },
   { k: 'grassRange',  label: 'Grass distance',     min: 40,   max: 165,  step: 5, unit: ' m' },

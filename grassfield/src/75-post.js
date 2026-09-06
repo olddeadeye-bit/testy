@@ -104,7 +104,7 @@ void main(){
     float n1 = hash11(dot(g, vec2(12.9898, 78.233)) + uFrame * 1.618) - 0.5;
     float n2 = hash11(dot(g, vec2(39.346, 11.135)) + uFrame * 2.718 + 91.0) - 0.5;
     float n3 = hash11(dot(g, vec2(63.712, 27.409)) + uFrame * 3.142 + 17.0) - 0.5;
-    float amt = uGrain * mix(1.75, 0.35, smoothstep(0.015, 0.30, luma(col)));
+    float amt = uGrain * mix(1.25, 0.40, smoothstep(0.010, 0.32, luma(col)));
     col += (vec3(n1) * 0.72 + vec3(n2, n3, -n2 - n3) * 0.28) * amt;
   }
 

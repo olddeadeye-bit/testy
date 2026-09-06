@@ -27,7 +27,6 @@ uniform vec2 uRange;         /* radial band this ring covers */
 uniform vec2 uFadeIn;
 uniform vec2 uFadeOut;
 uniform float uSeed;
-uniform float uKeep;         /* density scaling, 0..1 */
 
 uniform float uBladeHeight;
 uniform float uBladeWidth;
@@ -64,7 +63,6 @@ void main(){
   float dist = length(toCam);
   if (dist < uRange.x || dist > uRange.y) { cull(); return; }
   if (dist > 4.0 && dot(toCam / dist, uFwdXZ) < uCullDot) { cull(); return; }
-  if (h0.z > uKeep) { cull(); return; }
 
   vec4 f = field(base);
   /* Tufts at two scales. The photograph's field is organised into broad
@@ -85,13 +83,15 @@ void main(){
      on a tussock and thins out in the hollow between them, and coupling
      the two is what turns a flat sward into the lumpy, shadowed surface
      the photograph has. */
-  float mound = fieldG(base, 0.092);
+  vec4 det = detail(base);
+  float mound = det.r;
 
   /* how tall this blade is relative to the others in its own tuft */
   float rel   = 0.40 + 0.98 * pow(h1.x, 1.30);
   float hgt   = uBladeHeight * rel
                              * (0.60 + 0.86 * clump)
-                             * (0.72 + 0.56 * mound) * fade;
+                             * (0.74 + 0.40 * mound)
+                             * (0.80 + 0.36 * det.b) * fade;
   float halfW = uBladeWidth * uWidthMul * (0.68 + 0.64 * h1.y);
 
   /* A few blades in every hundred stand taller and finer than the rest,
@@ -99,16 +99,19 @@ void main(){
      a mown edge. Kept modest - overdone, they read as bamboo. */
   float stalk = smoothstep(0.955, 0.995, h0.z);
   hgt   *= 1.0 + 0.30 * stalk;
-  halfW *= 1.0 - 0.12 * stalk;
+  halfW *= 1.0 + 0.22 * stalk;
   float roll  = h1.z * TAU;
   float phase = h1.w * TAU;
   float stiff = 0.60 + 0.65 * h0.z;
 
   /* ---- which way it lies ------------------------------------------
-     A prevailing comb direction from the field texture, pulled toward
-     the wind, plus a little per-blade disagreement. Grass that all
-     leans identically looks like carpet. */
-  float combAng = atan(uWind.y, uWind.x) + (f.b - 0.5) * 1.7;
+     Coarse comb from the swathe field, plus a per-tuft turn: in the
+     photograph each tussock is combed its own way inside the broader
+     sweep, and without the second term the whole field brushes as one.
+     Then a little per-blade disagreement on top, because grass that all
+     leans identically reads as carpet pile. */
+  float combAng = atan(uWind.y, uWind.x)
+                + (f.b - 0.5) * 1.55 + (det.g - 0.5) * 1.15;
   vec2 comb = vec2(cos(combAng), sin(combAng));
   vec2 jit  = vec2(cos(h1.z * TAU), sin(h1.z * TAU));
   /* Pulled toward the wind, but not all the way: grass that all points
@@ -151,6 +154,8 @@ void main(){
 
   bend = clamp(bend * (1.0 - 0.35 * stalk), 0.015, 1.85);
 
+  float gh = surfaceHeight(base);
+
   /* ---- circular-arc bend, length preserved exactly ---------------- */
   float t = aV.y;
   vec3 up = vec3(0.0, 1.0, 0.0);
@@ -168,7 +173,7 @@ void main(){
   /* far rings turn edge-on blades toward the camera so they do not
      flicker out of existence at a kilometre */
   if (uViewFace > 0.001){
-    vec3 toEye = normalize(uCam - (vec3(base.x, 0.0, base.y) + pos));
+    vec3 toEye = normalize(uCam - (vec3(base.x, gh, base.y) + pos));
     vec3 billboard = cross(tangent, toEye);
     float bl = length(billboard);
     if (bl > 1e-3) sideAxis = normalize(mix(sideAxis, billboard / bl, uViewFace));
@@ -182,7 +187,6 @@ void main(){
              * 0.016 * t * t * gustAmp;
 
   vec3 local = pos + sideAxis * (aV.x * w + flut);
-  float gh = surfaceHeight(base);
   vWorld = vec3(base.x, gh, base.y) + local;
 
   /* the cross-section of a blade is a shallow trough, not a plane */
@@ -193,7 +197,7 @@ void main(){
      across the photograph, instead of even salt-and-pepper */
   /* Laid-over patches are the pale ones, so the colour variation has to
      follow the same field as the bend, not an independent hash. */
-  vColVar = clamp(h1.y * 0.24 + clump * 0.40 + lay * 0.36, 0.0, 1.0);
+  vColVar = clamp(h1.y * 0.18 + clump * 0.26 + lay * 0.30 + mound * 0.26, 0.0, 1.0);
   vDist = length(uCam - vWorld);
   /* Almost NO sky reaches the bottom of a real canopy. The photograph's
      hollows are essentially black, and a gentle root-to-tip ramp cannot
@@ -204,8 +208,9 @@ void main(){
      sees almost no sky, however near its own tip you are. Without this
      every blade at a given height is lit identically and the field has
      no hollows in it at all - just even fur. */
-  ao *= mix(0.22, 1.0, smoothstep(0.42, 1.05, rel));
-  ao *= mix(0.55, 1.0, smoothstep(0.18, 0.72, mound));
+  ao *= mix(0.32, 1.0, smoothstep(0.42, 1.05, rel));
+  /* down in the hollow between tussocks little sky reaches the roots */
+  ao *= mix(0.46, 1.0, smoothstep(0.05, 0.85, mound));
   /* Close up you see down into the canopy, where it is nearly black. At
      fifty metres you only resolve the tops, and the dark interior is
      hidden behind them - so the same occlusion term has to relax with
@@ -251,8 +256,11 @@ void main(){
   vec3 trans = shIrradiance(-N) * (1.0 / PI) * uTranslucency * pow(vT, 1.3) * vAO;
 
   /* and the airglow band directly behind the blade, catching its edge */
+  /* A squared edge term lights an edge-on blade evenly down its whole
+     length and the field fills with bright scratches. Cubed, only the
+     blades genuinely presenting an edge catch it. */
   vec3 behind = normalize(vec3(D.x, 0.06, D.z));
-  float edge = pow(1.0 - abs(dot(N, V)), 2.0);
+  float edge = pow(1.0 - abs(dot(N, V)), 3.0);
   vec3 rim = skyPlate(behind) * edge * uBackLight * pow(vT, 1.15) * vAO;
 
   vec3 sheen = skySheen(N, V, uSheen) * mix(0.12, 1.0, vAO);
@@ -375,7 +383,6 @@ class Grass {
       const widen = clamp(1 + 0.4 * (1 / Math.sqrt(dens) - 1), 1, 2.1);
       gl.uniform1f(p.u.uCell, cell);
       gl.uniform1i(p.u.uGridN, gridN);
-      gl.uniform1f(p.u.uKeep, 1.1);
       gl.uniform2f(p.u.uRange, r.r0, r1);
       gl.uniform2f(p.u.uFadeIn, r.fadeIn[0], r.fadeIn[1]);
       gl.uniform2f(p.u.uFadeOut,

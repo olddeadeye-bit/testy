@@ -129,7 +129,7 @@ vec3 hazeColour(vec3 viewDir){
      green back into the distance, where the photograph has it. */
   vec3 h = normalize(vec3(viewDir.x, 0.055, viewDir.z));
   vec3 amb = shIrradiance(vec3(0.0, 1.0, 0.0)) * (1.0 / PI);
-  return mix(skyPlate(h), amb * 1.45, 0.30) * uFogTint;
+  return mix(skyPlate(h), amb * 1.45, 0.42) * uFogTint;
 }
 
 float hazeAmount(float dist){
@@ -159,7 +159,26 @@ uniform sampler2D uHeight;
 uniform float uHeightPeriod;
 uniform float uHeightScale;
 
+/* =====================================================================
+   Detail texture (RGBA8, tiling every uDetailPeriod metres)
+
+   The field texture above works at tens of metres - swathes, gusts, worn
+   tracks. This one works at ONE metre, which is the scale a tussock
+   actually is. Trying to carry both in one texture meant sampling the
+   coarse field at a tiny scale, and its fine octaves then turned the
+   mound signal into noise: the hollows came out speckled instead of
+   shaped, and the grass never grouped into tufts.
+
+     r  mound height    - the dome each tussock sits on
+     g  local comb      - which way THIS tuft is combed
+     b  length          - how long its blades run
+     a  spare variation
+   ===================================================================== */
+uniform sampler2D uDetail;
+uniform float uDetailPeriod;
 uniform float uTussock;
+
+vec4 detail(vec2 world){ return texture(uDetail, world / uDetailPeriod); }
 
 float groundHeight(vec2 world){
   return texture(uHeight, world / uHeightPeriod).r * uHeightScale;
@@ -170,7 +189,7 @@ float groundHeight(vec2 world){
    sky down there at all. A metre-scale mound field on top of the terrain
    is what gives the canopy somewhere to cast those hollows. */
 float surfaceHeight(vec2 world){
-  return groundHeight(world) + (fieldG(world, 0.092) - 0.5) * uTussock;
+  return groundHeight(world) + (detail(world).r - 0.5) * uTussock;
 }
 vec3 groundNormal(vec2 world, float eps){
   float hx = groundHeight(world + vec2(eps, 0.0)) - groundHeight(world - vec2(eps, 0.0));
@@ -198,14 +217,19 @@ float trampleAt(vec2 world){
    direction reproduces them almost for free.                          */
 vec3 skySheen(vec3 n, vec3 v, float amount){
   vec3 r = reflect(-v, n);
-  float f0 = 0.045;                        /* leaf cuticle */
-  float f = f0 + (1.0 - f0) * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
-  /* The plate, not the harmonics. An order-2 projection of the sky is
-     smooth by construction, and a smooth reflection gives every blade
-     the same dull grey. Reflecting the actual photograph means a blade
-     turned toward the galactic core glints and its neighbour does not,
-     which is precisely the texture the photograph has. */
-  return skyPlate(r) * f * amount;
+  /* Leaf cuticle, but a rough one. A textbook Fresnel term runs to 1.0 at
+     grazing incidence, and a blade seen edge-on then mirrors whatever is
+     on the horizon - which here is a warm light-pollution dome, so the
+     whole field turned khaki and grew wiry yellow streaks. Capping the
+     grazing response is what a rough surface does anyway. */
+  const float f0 = 0.045, fMax = 0.40;
+  float f = f0 + (fMax - f0) * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
+
+  /* Part mirror, part diffuse dome. The sharp half is what makes a blade
+     turned toward the galactic core glint while its neighbour does not;
+     the smooth half stops that from becoming a field of hot wires. */
+  vec3 refl = mix(shIrradiance(r) * (1.0 / PI), skyPlate(r), 0.62);
+  return refl * f * amount;
 }
 
 /* ---- specular ---- */

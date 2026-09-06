@@ -53,7 +53,8 @@ void main(){
   /* The comb is stored as an offset from the prevailing wind rather than
      an absolute bearing: an absolute angle in a byte wraps at 0/1, and
      bilinear filtering across that wrap draws seams across the field. */
-  float ang = atan(uWind.y, uWind.x) + (f.b - 0.5) * 1.7;
+  vec4 det = detail(vWorld.xz);
+  float ang = atan(uWind.y, uWind.x) + (f.b - 0.5) * 1.55 + (det.g - 0.5) * 1.15;
 
   /* two octaves at incommensurable scales: kills the visible repeat */
   vec4 m0 = matAt(vWorld.xz, 1.35, ang);
@@ -73,7 +74,8 @@ void main(){
   albedo *= mix(0.55, 1.0, smoothstep(0.25, 0.75, f.a));
 
   /* the mat sits at the bottom of the canopy, so very little sky reaches it */
-  float canopy = mix(0.022, 0.30, smoothstep(6.0, 60.0, dist));
+  float canopy = mix(0.038, 0.30, smoothstep(6.0, 60.0, dist))
+               * mix(0.58, 1.0, smoothstep(0.05, 0.85, det.r));
   float tr = trampleAt(vWorld.xz);
   canopy = mix(canopy, canopy * 1.7, tr);            /* flattened grass opens up */
 

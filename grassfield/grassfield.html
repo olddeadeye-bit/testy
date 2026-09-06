@@ -370,8 +370,7 @@ class GL {
     const opts = {
       alpha: false, antialias: false, depth: true, stencil: false,
       powerPreference: 'high-performance',
-      preserveDrawingBuffer: true,      // so "save a frame" can read pixels
-      desynchronized: true
+      preserveDrawingBuffer: true       // so "save a frame" can read pixels
     };
     const gl = canvas.getContext('webgl2', opts);
     if (!gl) throw new Error('WEBGL2_UNAVAILABLE');
@@ -508,15 +507,18 @@ class GL {
    */
   targetMS(w, h, samples, opts) {
     const gl = this.gl;
-    const resolved = this.target(w, h, opts);
-    const fmt = opts && opts.internal ? opts.internal : (this.hdr ? gl.RGBA16F : gl.RGBA8);
+    opts = opts || {};
+    /* the resolve target needs no depth of its own - depth lives on the
+       multisampled side and is never read back */
+    const resolved = this.target(w, h, Object.assign({}, opts, { depth: false }));
+    const fmt = opts.internal || (this.hdr ? gl.RGBA16F : gl.RGBA8);
     let max = 0;
     try {
       const counts = gl.getInternalformatParameter(gl.RENDERBUFFER, fmt, gl.SAMPLES);
       max = counts && counts.length ? counts[0] : 0;
     } catch (e) { max = 0; }
     const n = Math.min(samples, max, gl.getParameter(gl.MAX_SAMPLES) || 0);
-    if (n < 2) return resolved;                 /* fall back to plain rendering */
+    if (n < 2) { resolved.free(); return this.target(w, h, opts); }
 
     const fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -532,7 +534,8 @@ class GL {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     if (!ok) {
       gl.deleteFramebuffer(fbo); gl.deleteRenderbuffer(col); gl.deleteRenderbuffer(dep);
-      return resolved;
+      resolved.free();
+      return this.target(w, h, opts);
     }
 
     const inner = resolved.free;
@@ -713,7 +716,7 @@ vec3 hazeColour(vec3 viewDir){
      green back into the distance, where the photograph has it. */
   vec3 h = normalize(vec3(viewDir.x, 0.055, viewDir.z));
   vec3 amb = shIrradiance(vec3(0.0, 1.0, 0.0)) * (1.0 / PI);
-  return mix(skyPlate(h), amb * 1.45, 0.30) * uFogTint;
+  return mix(skyPlate(h), amb * 1.45, 0.42) * uFogTint;
 }
 
 float hazeAmount(float dist){
@@ -743,7 +746,26 @@ uniform sampler2D uHeight;
 uniform float uHeightPeriod;
 uniform float uHeightScale;
 
+/* =====================================================================
+   Detail texture (RGBA8, tiling every uDetailPeriod metres)
+
+   The field texture above works at tens of metres - swathes, gusts, worn
+   tracks. This one works at ONE metre, which is the scale a tussock
+   actually is. Trying to carry both in one texture meant sampling the
+   coarse field at a tiny scale, and its fine octaves then turned the
+   mound signal into noise: the hollows came out speckled instead of
+   shaped, and the grass never grouped into tufts.
+
+     r  mound height    - the dome each tussock sits on
+     g  local comb      - which way THIS tuft is combed
+     b  length          - how long its blades run
+     a  spare variation
+   ===================================================================== */
+uniform sampler2D uDetail;
+uniform float uDetailPeriod;
 uniform float uTussock;
+
+vec4 detail(vec2 world){ return texture(uDetail, world / uDetailPeriod); }
 
 float groundHeight(vec2 world){
   return texture(uHeight, world / uHeightPeriod).r * uHeightScale;
@@ -754,7 +776,7 @@ float groundHeight(vec2 world){
    sky down there at all. A metre-scale mound field on top of the terrain
    is what gives the canopy somewhere to cast those hollows. */
 float surfaceHeight(vec2 world){
-  return groundHeight(world) + (fieldG(world, 0.092) - 0.5) * uTussock;
+  return groundHeight(world) + (detail(world).r - 0.5) * uTussock;
 }
 vec3 groundNormal(vec2 world, float eps){
   float hx = groundHeight(world + vec2(eps, 0.0)) - groundHeight(world - vec2(eps, 0.0));
@@ -782,14 +804,19 @@ float trampleAt(vec2 world){
    direction reproduces them almost for free.                          */
 vec3 skySheen(vec3 n, vec3 v, float amount){
   vec3 r = reflect(-v, n);
-  float f0 = 0.045;                        /* leaf cuticle */
-  float f = f0 + (1.0 - f0) * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
-  /* The plate, not the harmonics. An order-2 projection of the sky is
-     smooth by construction, and a smooth reflection gives every blade
-     the same dull grey. Reflecting the actual photograph means a blade
-     turned toward the galactic core glints and its neighbour does not,
-     which is precisely the texture the photograph has. */
-  return skyPlate(r) * f * amount;
+  /* Leaf cuticle, but a rough one. A textbook Fresnel term runs to 1.0 at
+     grazing incidence, and a blade seen edge-on then mirrors whatever is
+     on the horizon - which here is a warm light-pollution dome, so the
+     whole field turned khaki and grew wiry yellow streaks. Capping the
+     grazing response is what a rough surface does anyway. */
+  const float f0 = 0.045, fMax = 0.40;
+  float f = f0 + (fMax - f0) * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
+
+  /* Part mirror, part diffuse dome. The sharp half is what makes a blade
+     turned toward the galactic core glint while its neighbour does not;
+     the smooth half stops that from becoming a field of hot wires. */
+  vec3 refl = mix(shIrradiance(r) * (1.0 / PI), skyPlate(r), 0.62);
+  return refl * f * amount;
 }
 
 /* ---- specular ---- */
@@ -990,7 +1017,8 @@ void main(){
   /* The comb is stored as an offset from the prevailing wind rather than
      an absolute bearing: an absolute angle in a byte wraps at 0/1, and
      bilinear filtering across that wrap draws seams across the field. */
-  float ang = atan(uWind.y, uWind.x) + (f.b - 0.5) * 1.7;
+  vec4 det = detail(vWorld.xz);
+  float ang = atan(uWind.y, uWind.x) + (f.b - 0.5) * 1.55 + (det.g - 0.5) * 1.15;
 
   /* two octaves at incommensurable scales: kills the visible repeat */
   vec4 m0 = matAt(vWorld.xz, 1.35, ang);
@@ -1010,7 +1038,8 @@ void main(){
   albedo *= mix(0.55, 1.0, smoothstep(0.25, 0.75, f.a));
 
   /* the mat sits at the bottom of the canopy, so very little sky reaches it */
-  float canopy = mix(0.022, 0.30, smoothstep(6.0, 60.0, dist));
+  float canopy = mix(0.038, 0.30, smoothstep(6.0, 60.0, dist))
+               * mix(0.58, 1.0, smoothstep(0.05, 0.85, det.r));
   float tr = trampleAt(vWorld.xz);
   canopy = mix(canopy, canopy * 1.7, tr);            /* flattened grass opens up */
 
@@ -1118,7 +1147,6 @@ uniform vec2 uRange;         /* radial band this ring covers */
 uniform vec2 uFadeIn;
 uniform vec2 uFadeOut;
 uniform float uSeed;
-uniform float uKeep;         /* density scaling, 0..1 */
 
 uniform float uBladeHeight;
 uniform float uBladeWidth;
@@ -1155,7 +1183,6 @@ void main(){
   float dist = length(toCam);
   if (dist < uRange.x || dist > uRange.y) { cull(); return; }
   if (dist > 4.0 && dot(toCam / dist, uFwdXZ) < uCullDot) { cull(); return; }
-  if (h0.z > uKeep) { cull(); return; }
 
   vec4 f = field(base);
   /* Tufts at two scales. The photograph's field is organised into broad
@@ -1176,13 +1203,15 @@ void main(){
      on a tussock and thins out in the hollow between them, and coupling
      the two is what turns a flat sward into the lumpy, shadowed surface
      the photograph has. */
-  float mound = fieldG(base, 0.092);
+  vec4 det = detail(base);
+  float mound = det.r;
 
   /* how tall this blade is relative to the others in its own tuft */
   float rel   = 0.40 + 0.98 * pow(h1.x, 1.30);
   float hgt   = uBladeHeight * rel
                              * (0.60 + 0.86 * clump)
-                             * (0.72 + 0.56 * mound) * fade;
+                             * (0.74 + 0.40 * mound)
+                             * (0.80 + 0.36 * det.b) * fade;
   float halfW = uBladeWidth * uWidthMul * (0.68 + 0.64 * h1.y);
 
   /* A few blades in every hundred stand taller and finer than the rest,
@@ -1190,16 +1219,19 @@ void main(){
      a mown edge. Kept modest - overdone, they read as bamboo. */
   float stalk = smoothstep(0.955, 0.995, h0.z);
   hgt   *= 1.0 + 0.30 * stalk;
-  halfW *= 1.0 - 0.12 * stalk;
+  halfW *= 1.0 + 0.22 * stalk;
   float roll  = h1.z * TAU;
   float phase = h1.w * TAU;
   float stiff = 0.60 + 0.65 * h0.z;
 
   /* ---- which way it lies ------------------------------------------
-     A prevailing comb direction from the field texture, pulled toward
-     the wind, plus a little per-blade disagreement. Grass that all
-     leans identically looks like carpet. */
-  float combAng = atan(uWind.y, uWind.x) + (f.b - 0.5) * 1.7;
+     Coarse comb from the swathe field, plus a per-tuft turn: in the
+     photograph each tussock is combed its own way inside the broader
+     sweep, and without the second term the whole field brushes as one.
+     Then a little per-blade disagreement on top, because grass that all
+     leans identically reads as carpet pile. */
+  float combAng = atan(uWind.y, uWind.x)
+                + (f.b - 0.5) * 1.55 + (det.g - 0.5) * 1.15;
   vec2 comb = vec2(cos(combAng), sin(combAng));
   vec2 jit  = vec2(cos(h1.z * TAU), sin(h1.z * TAU));
   /* Pulled toward the wind, but not all the way: grass that all points
@@ -1242,6 +1274,8 @@ void main(){
 
   bend = clamp(bend * (1.0 - 0.35 * stalk), 0.015, 1.85);
 
+  float gh = surfaceHeight(base);
+
   /* ---- circular-arc bend, length preserved exactly ---------------- */
   float t = aV.y;
   vec3 up = vec3(0.0, 1.0, 0.0);
@@ -1259,7 +1293,7 @@ void main(){
   /* far rings turn edge-on blades toward the camera so they do not
      flicker out of existence at a kilometre */
   if (uViewFace > 0.001){
-    vec3 toEye = normalize(uCam - (vec3(base.x, 0.0, base.y) + pos));
+    vec3 toEye = normalize(uCam - (vec3(base.x, gh, base.y) + pos));
     vec3 billboard = cross(tangent, toEye);
     float bl = length(billboard);
     if (bl > 1e-3) sideAxis = normalize(mix(sideAxis, billboard / bl, uViewFace));
@@ -1273,7 +1307,6 @@ void main(){
              * 0.016 * t * t * gustAmp;
 
   vec3 local = pos + sideAxis * (aV.x * w + flut);
-  float gh = surfaceHeight(base);
   vWorld = vec3(base.x, gh, base.y) + local;
 
   /* the cross-section of a blade is a shallow trough, not a plane */
@@ -1284,7 +1317,7 @@ void main(){
      across the photograph, instead of even salt-and-pepper */
   /* Laid-over patches are the pale ones, so the colour variation has to
      follow the same field as the bend, not an independent hash. */
-  vColVar = clamp(h1.y * 0.24 + clump * 0.40 + lay * 0.36, 0.0, 1.0);
+  vColVar = clamp(h1.y * 0.18 + clump * 0.26 + lay * 0.30 + mound * 0.26, 0.0, 1.0);
   vDist = length(uCam - vWorld);
   /* Almost NO sky reaches the bottom of a real canopy. The photograph's
      hollows are essentially black, and a gentle root-to-tip ramp cannot
@@ -1295,8 +1328,9 @@ void main(){
      sees almost no sky, however near its own tip you are. Without this
      every blade at a given height is lit identically and the field has
      no hollows in it at all - just even fur. */
-  ao *= mix(0.22, 1.0, smoothstep(0.42, 1.05, rel));
-  ao *= mix(0.55, 1.0, smoothstep(0.18, 0.72, mound));
+  ao *= mix(0.32, 1.0, smoothstep(0.42, 1.05, rel));
+  /* down in the hollow between tussocks little sky reaches the roots */
+  ao *= mix(0.46, 1.0, smoothstep(0.05, 0.85, mound));
   /* Close up you see down into the canopy, where it is nearly black. At
      fifty metres you only resolve the tops, and the dark interior is
      hidden behind them - so the same occlusion term has to relax with
@@ -1342,8 +1376,11 @@ void main(){
   vec3 trans = shIrradiance(-N) * (1.0 / PI) * uTranslucency * pow(vT, 1.3) * vAO;
 
   /* and the airglow band directly behind the blade, catching its edge */
+  /* A squared edge term lights an edge-on blade evenly down its whole
+     length and the field fills with bright scratches. Cubed, only the
+     blades genuinely presenting an edge catch it. */
   vec3 behind = normalize(vec3(D.x, 0.06, D.z));
-  float edge = pow(1.0 - abs(dot(N, V)), 2.0);
+  float edge = pow(1.0 - abs(dot(N, V)), 3.0);
   vec3 rim = skyPlate(behind) * edge * uBackLight * pow(vT, 1.15) * vAO;
 
   vec3 sheen = skySheen(N, V, uSheen) * mix(0.12, 1.0, vAO);
@@ -1466,7 +1503,6 @@ class Grass {
       const widen = clamp(1 + 0.4 * (1 / Math.sqrt(dens) - 1), 1, 2.1);
       gl.uniform1f(p.u.uCell, cell);
       gl.uniform1i(p.u.uGridN, gridN);
-      gl.uniform1f(p.u.uKeep, 1.1);
       gl.uniform2f(p.u.uRange, r.r0, r1);
       gl.uniform2f(p.u.uFadeIn, r.fadeIn[0], r.fadeIn[1]);
       gl.uniform2f(p.u.uFadeOut,
@@ -1715,7 +1751,7 @@ void main(){
     float n1 = hash11(dot(g, vec2(12.9898, 78.233)) + uFrame * 1.618) - 0.5;
     float n2 = hash11(dot(g, vec2(39.346, 11.135)) + uFrame * 2.718 + 91.0) - 0.5;
     float n3 = hash11(dot(g, vec2(63.712, 27.409)) + uFrame * 3.142 + 17.0) - 0.5;
-    float amt = uGrain * mix(1.75, 0.35, smoothstep(0.015, 0.30, luma(col)));
+    float amt = uGrain * mix(1.25, 0.40, smoothstep(0.010, 0.32, luma(col)));
     col += (vec3(n1) * 0.72 + vec3(n2, n3, -n2 - n3) * 0.28) * amt;
   }
 
@@ -2217,12 +2253,12 @@ const DEFAULTS = {
   wind: 0.70,
   fov: 68,
   exposure: 1.00,
-  bloom: 0.11,
+  bloom: 0.09,
   grain: 0.028,
   vignette: 0.42,
   saturation: 1.04,
-  groundLift: 4.6,
-  sheen: 2.40,
+  groundLift: 5.9,
+  sheen: 1.45,
   chroma: 0.0035,
   stars: 1.0,
   fireflies: 0.0,
@@ -2268,11 +2304,22 @@ class World {
     });
 
     this.fieldPeriod = 64;
-    this.tussock = 0.34;
+    this.tussock = 0.46;
     this.fieldRes = 256;
     this.fieldData = this.bakeField(this.fieldRes);
     this.fieldTex = this.glw.texture({
       w: this.fieldRes, h: this.fieldRes, data: this.fieldData,
+      wrap: gl.REPEAT, filter: gl.LINEAR
+    });
+
+    /* One metre scale: tussock mounds, per-tuft comb, blade length.
+       Kept apart from the field texture because the two live at
+       completely different scales and sharing one made both worse. */
+    this.detailPeriod = 12;
+    this.detailRes = 256;
+    this.detailData = this.bakeDetail(this.detailRes);
+    this.detailTex = this.glw.texture({
+      w: this.detailRes, h: this.detailRes, data: this.detailData,
       wrap: gl.REPEAT, filter: gl.LINEAR
     });
 
@@ -2362,9 +2409,21 @@ class World {
 
   /** The CPU's copy of surfaceHeight(): terrain plus tussock mounds. */
   surfaceAt(x, z) {
-    const t = this.sampleBaked(this.fieldData, this.fieldRes, 4, 1, x, z,
-                               this.fieldPeriod * 0.092) / 255;
+    const t = this.sampleBaked(this.detailData, this.detailRes, 4, 0, x, z,
+                               this.detailPeriod) / 255;
     return this.groundAt(x, z) + (t - 0.5) * this.tussock;
+  }
+
+  /**
+   * Where a person's feet actually go. Not the same as surfaceAt: you
+   * walk BETWEEN tussocks and push through them, you do not step neatly
+   * over each dome, and following them exactly turns a walk across the
+   * field into a ride on a trampoline.
+   */
+  walkAt(x, z) {
+    const t = this.sampleBaked(this.detailData, this.detailRes, 4, 0, x, z,
+                               this.detailPeriod) / 255;
+    return this.groundAt(x, z) + (t - 0.5) * this.tussock * 0.28;
   }
 
   /** Height in metres at a world position - the CPU's copy of groundHeight(). */
@@ -2403,6 +2462,30 @@ class World {
         out[i + 2] = (comb(u, v) * 255) | 0;
         const b = clamp((bare(u, v) - 0.46) * 2.3 + 0.5, 0, 1);
         out[i + 3] = (b * 255) | 0;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Tussocks. Deliberately only two octaves: the point of this field is
+   * that it is SMOOTH at a metre. Fine detail here does not read as
+   * texture, it reads as speckle, and it destroys the very grouping the
+   * field is here to create.
+   */
+  bakeDetail(res) {
+    const mound = makeFbm(5150, 6, 2, 0.45);
+    const comb = makeFbm(8801, 5, 2, 0.5);
+    const len = makeFbm(2233, 7, 2, 0.5);
+    const spare = makeFbm(4477, 9, 2, 0.5);
+    const out = new Uint8Array(res * res * 4);
+    for (let y = 0; y < res; y++) {
+      for (let x = 0; x < res; x++) {
+        const u = x / res, v = y / res, i = (y * res + x) * 4;
+        out[i] = clamp((mound(u, v) - 0.5) * 1.7 + 0.5, 0, 1) * 255;
+        out[i + 1] = comb(u, v) * 255;
+        out[i + 2] = len(u, v) * 255;
+        out[i + 3] = spare(u, v) * 255;
       }
     }
     return out;
@@ -2538,7 +2621,7 @@ class World {
       /* how hard the sky glints off the leaf surface */
       get sheen() { return w.settings.sheen; },
       get translucency() { return 0.88; },
-      get backLight() { return 0.58; },
+      get backLight() { return 0.36; },
       get groundGain() { return w.settings.groundLift; },
       get matTex() { return w.matTex; },
       get starAmount() { return w.settings.stars; },
@@ -2548,9 +2631,11 @@ class World {
         w.glw.bindTex(1, w.fieldTex); gl.uniform1i(p.u.uField, 1);
         w.glw.bindTex(2, w.heightTex); gl.uniform1i(p.u.uHeight, 2);
         w.glw.bindTex(3, w.trample.texture); gl.uniform1i(p.u.uTrample, 3);
+        w.glw.bindTex(5, w.detailTex); gl.uniform1i(p.u.uDetail, 5);
+        gl.uniform1f(p.u.uDetailPeriod, w.detailPeriod);
         gl.uniform1f(p.u.uSkyLift, w.light.blackLift);
         gl.uniform1f(p.u.uSkyScale, w.light.blackScale);
-        gl.uniform1f(p.u.uHighlightBoost, 0.21);
+        gl.uniform1f(p.u.uHighlightBoost, 0.17);
         gl.uniform1f(p.u.uTime, w.time);
         gl.uniform3fv(p.u.uSH, w.sh);
         gl.uniform1f(p.u.uFogDensity, 0.0170);
@@ -2636,7 +2721,7 @@ class World {
     this.pos[0] += this.vel[0] * dt;
     this.pos[2] += this.vel[2] * dt;
 
-    const gh = this.surfaceAt(this.pos[0], this.pos[2]);
+    const gh = this.walkAt(this.pos[0], this.pos[2]);
     if (this.grounded && input.jumping()) { this.vy = 4.1; this.grounded = false; }
     if (!this.grounded) {
       this.vy -= 18.0 * dt;
@@ -2761,7 +2846,7 @@ const CONTROLS = [
   { grp: 'Field' },
   { k: 'wind',        label: 'Wind',               min: 0,    max: 1.6,  step: 0.01 },
   { k: 'groundLift',  label: 'Ground brightness',  min: 0.5,  max: 7.0,  step: 0.05 },
-  { k: 'sheen',       label: 'Leaf sheen',         min: 0,    max: 3.0,  step: 0.05 },
+  { k: 'sheen',       label: 'Leaf sheen',         min: 0,    max: 5.0,  step: 0.05 },
   { k: 'density',     label: 'Grass density',      min: 0.2,  max: 2.0,  step: 0.05 },
   { k: 'bladeHeight', label: 'Grass height',       min: 0.4,  max: 1.6,  step: 0.02, unit: ' m' },
   { k: 'grassRange',  label: 'Grass distance',     min: 40,   max: 165,  step: 5, unit: ' m' },
@@ -2855,7 +2940,7 @@ function boot() {
     audio.setVolume(s.volume);
 
     world.resize();
-    addEventListener('resize', () => world.resize());
+    addEventListener('resize', () => { world.resize(); compassDirty = true; });
 
     buildPanel(world, input, audio);
     applyHud(s);
@@ -2954,6 +3039,7 @@ function boot() {
 
   const CARDINALS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   let tapeBuilt = false;
+  let compassW = -1, compassDirty = true;
   function updateCompass(world) {
     const tape = $('compassTape');
     if (!tapeBuilt) {
@@ -2968,9 +3054,10 @@ function boot() {
       tapeBuilt = true;
     }
     const deg = ((world.yaw * 180 / Math.PI) % 360 + 360) % 360;
-    const w = tape.parentElement.clientWidth;
+    /* cached: reading clientWidth every frame forces a layout */
+    if (compassW < 0 || compassDirty) { compassW = tape.parentElement.clientWidth; compassDirty = false; }
     /* 26 px per 15 degrees; the middle repeat keeps it continuous */
-    const x = -(deg / 15) * 26 - 24 * 26 + w * 0.5;
+    const x = -(deg / 15) * 26 - 24 * 26 + compassW * 0.5;
     tape.style.transform = 'translateX(' + x + 'px)';
   }
 

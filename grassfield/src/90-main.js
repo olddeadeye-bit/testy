@@ -11,12 +11,12 @@ const DEFAULTS = {
   wind: 0.70,
   fov: 68,
   exposure: 1.00,
-  bloom: 0.11,
+  bloom: 0.09,
   grain: 0.028,
   vignette: 0.42,
   saturation: 1.04,
-  groundLift: 4.6,
-  sheen: 2.40,
+  groundLift: 5.9,
+  sheen: 1.45,
   chroma: 0.0035,
   stars: 1.0,
   fireflies: 0.0,
@@ -62,11 +62,22 @@ class World {
     });
 
     this.fieldPeriod = 64;
-    this.tussock = 0.34;
+    this.tussock = 0.46;
     this.fieldRes = 256;
     this.fieldData = this.bakeField(this.fieldRes);
     this.fieldTex = this.glw.texture({
       w: this.fieldRes, h: this.fieldRes, data: this.fieldData,
+      wrap: gl.REPEAT, filter: gl.LINEAR
+    });
+
+    /* One metre scale: tussock mounds, per-tuft comb, blade length.
+       Kept apart from the field texture because the two live at
+       completely different scales and sharing one made both worse. */
+    this.detailPeriod = 12;
+    this.detailRes = 256;
+    this.detailData = this.bakeDetail(this.detailRes);
+    this.detailTex = this.glw.texture({
+      w: this.detailRes, h: this.detailRes, data: this.detailData,
       wrap: gl.REPEAT, filter: gl.LINEAR
     });
 
@@ -156,9 +167,21 @@ class World {
 
   /** The CPU's copy of surfaceHeight(): terrain plus tussock mounds. */
   surfaceAt(x, z) {
-    const t = this.sampleBaked(this.fieldData, this.fieldRes, 4, 1, x, z,
-                               this.fieldPeriod * 0.092) / 255;
+    const t = this.sampleBaked(this.detailData, this.detailRes, 4, 0, x, z,
+                               this.detailPeriod) / 255;
     return this.groundAt(x, z) + (t - 0.5) * this.tussock;
+  }
+
+  /**
+   * Where a person's feet actually go. Not the same as surfaceAt: you
+   * walk BETWEEN tussocks and push through them, you do not step neatly
+   * over each dome, and following them exactly turns a walk across the
+   * field into a ride on a trampoline.
+   */
+  walkAt(x, z) {
+    const t = this.sampleBaked(this.detailData, this.detailRes, 4, 0, x, z,
+                               this.detailPeriod) / 255;
+    return this.groundAt(x, z) + (t - 0.5) * this.tussock * 0.28;
   }
 
   /** Height in metres at a world position - the CPU's copy of groundHeight(). */
@@ -197,6 +220,30 @@ class World {
         out[i + 2] = (comb(u, v) * 255) | 0;
         const b = clamp((bare(u, v) - 0.46) * 2.3 + 0.5, 0, 1);
         out[i + 3] = (b * 255) | 0;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Tussocks. Deliberately only two octaves: the point of this field is
+   * that it is SMOOTH at a metre. Fine detail here does not read as
+   * texture, it reads as speckle, and it destroys the very grouping the
+   * field is here to create.
+   */
+  bakeDetail(res) {
+    const mound = makeFbm(5150, 6, 2, 0.45);
+    const comb = makeFbm(8801, 5, 2, 0.5);
+    const len = makeFbm(2233, 7, 2, 0.5);
+    const spare = makeFbm(4477, 9, 2, 0.5);
+    const out = new Uint8Array(res * res * 4);
+    for (let y = 0; y < res; y++) {
+      for (let x = 0; x < res; x++) {
+        const u = x / res, v = y / res, i = (y * res + x) * 4;
+        out[i] = clamp((mound(u, v) - 0.5) * 1.7 + 0.5, 0, 1) * 255;
+        out[i + 1] = comb(u, v) * 255;
+        out[i + 2] = len(u, v) * 255;
+        out[i + 3] = spare(u, v) * 255;
       }
     }
     return out;
@@ -332,7 +379,7 @@ class World {
       /* how hard the sky glints off the leaf surface */
       get sheen() { return w.settings.sheen; },
       get translucency() { return 0.88; },
-      get backLight() { return 0.58; },
+      get backLight() { return 0.36; },
       get groundGain() { return w.settings.groundLift; },
       get matTex() { return w.matTex; },
       get starAmount() { return w.settings.stars; },
@@ -342,9 +389,11 @@ class World {
         w.glw.bindTex(1, w.fieldTex); gl.uniform1i(p.u.uField, 1);
         w.glw.bindTex(2, w.heightTex); gl.uniform1i(p.u.uHeight, 2);
         w.glw.bindTex(3, w.trample.texture); gl.uniform1i(p.u.uTrample, 3);
+        w.glw.bindTex(5, w.detailTex); gl.uniform1i(p.u.uDetail, 5);
+        gl.uniform1f(p.u.uDetailPeriod, w.detailPeriod);
         gl.uniform1f(p.u.uSkyLift, w.light.blackLift);
         gl.uniform1f(p.u.uSkyScale, w.light.blackScale);
-        gl.uniform1f(p.u.uHighlightBoost, 0.21);
+        gl.uniform1f(p.u.uHighlightBoost, 0.17);
         gl.uniform1f(p.u.uTime, w.time);
         gl.uniform3fv(p.u.uSH, w.sh);
         gl.uniform1f(p.u.uFogDensity, 0.0170);
@@ -430,7 +479,7 @@ class World {
     this.pos[0] += this.vel[0] * dt;
     this.pos[2] += this.vel[2] * dt;
 
-    const gh = this.surfaceAt(this.pos[0], this.pos[2]);
+    const gh = this.walkAt(this.pos[0], this.pos[2]);
     if (this.grounded && input.jumping()) { this.vy = 4.1; this.grounded = false; }
     if (!this.grounded) {
       this.vy -= 18.0 * dt;
