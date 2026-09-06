@@ -1,4 +1,4 @@
-<title>Grassfield</title>
+<title>Dark Sky Reserve</title>
 <style>
 :root{
   --ink:#dfe6e2;
@@ -30,7 +30,7 @@ body.noPost #vignetteFallback{opacity:1}
   backdrop-filter:blur(2px);transition:opacity .6s ease,visibility .6s}
 .overlay.gone{opacity:0;visibility:hidden;pointer-events:none}
 .gateInner{max-width:640px;padding:32px 34px;text-align:center}
-.gateInner h1{margin:0 0 .35rem;font-size:clamp(38px,7vw,68px);font-weight:200;letter-spacing:.24em;
+.gateInner h1{margin:0 0 .5rem;font-size:clamp(29px,6.2vw,60px);font-weight:200;letter-spacing:.20em;line-height:1.15;
   text-transform:uppercase;text-indent:.24em;
   background:linear-gradient(180deg,#f2f7f3,#93b6a4);-webkit-background-clip:text;background-clip:text;color:transparent;
   filter:drop-shadow(0 0 26px rgba(150,215,180,.20))}
@@ -131,8 +131,8 @@ body.touch #stick{display:block}
 <!-- ================= title / click-to-play ================= -->
 <div id="gate" class="overlay">
   <div class="gateInner">
-    <h1>Grassfield</h1>
-    <p class="sub">A night prairie under the Milky Way. Walk anywhere; the wind never stops.</p>
+    <h1>Dark Sky&nbsp;Reserve</h1>
+    <p class="sub">A night walk out under the darkest skies in Britain.</p>
     <div id="loadWrap"><div id="loadBar"><i></i></div><div id="loadMsg">preparing the field&hellip;</div></div>
     <button id="playBtn" hidden>Enter the field</button>
     <ul class="keys" id="gateKeys" hidden>
@@ -185,7 +185,7 @@ const SKY_LIGHT = {"source":{"width":1584,"height":672,"horizonRow":334,"degPerP
 
 /* ---- 10-util.js ------------------------------------------------ */
 /* =====================================================================
-   Grassfield - a walkable night prairie.
+   Dark Sky Reserve - a walkable night landscape.
 
    The sky you are standing under is the original 360 photograph, mapped
    onto a dome. That part is exact: stars are far enough away that a
@@ -3217,7 +3217,7 @@ class World {
        than a crash. If it happens, halve the budget and try again. */
     const err = gl.getError();
     if (err === gl.OUT_OF_MEMORY && this.settings.vramBudget > 56) {
-      console.warn('grassfield: out of video memory at ' + w + 'x' + h +
+      console.warn('dark-sky-reserve: out of video memory at ' + w + 'x' + h +
                    ' (' + plan.samples + 'x AA), halving the budget');
       this.settings.vramBudget = Math.max(48, this.settings.vramBudget * 0.5);
       this.rw = this.rh = 0;
@@ -3613,7 +3613,11 @@ function boot() {
     note.innerHTML = isTouch
       ? 'Drag on the left to walk, on the right to look.'
       : 'Mouse to look, WASD to walk. If the cursor stays visible, this page is not ' +
-        'allowed to capture it \u2014 hold the mouse button down to look around instead.';
+        'allowed to capture it \u2014 hold the mouse button down to look around instead.' +
+        '<br><br><span style="opacity:.55">In December 2020 the Yorkshire Dales and the ' +
+        'North York Moors were designated International Dark Sky Reserves together: ' +
+        '3,615 km\u00b2, the largest area in the UK ever designated at once. This is a ' +
+        'walk through that kind of dark.</span>';
 
     const enter = () => {
       gate.classList.add('gone');
@@ -3938,7 +3942,7 @@ function boot() {
       if (!blob) { toast('could not save the frame'); return; }
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'grassfield-' + Date.now() + '.png';
+      a.download = 'dark-sky-reserve-' + Date.now() + '.png';
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
       toast('frame saved');
@@ -3948,7 +3952,7 @@ function boot() {
   /** Everything worth knowing if it still will not run somewhere. */
   function diagnostics() {
     const lines = [];
-    lines.push('Grassfield diagnostics');
+    lines.push('Dark Sky Reserve — diagnostics');
     lines.push('userAgent: ' + navigator.userAgent);
     lines.push('devicePixelRatio: ' + devicePixelRatio +
                '   window: ' + innerWidth + 'x' + innerHeight);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Assemble grassfield.html from src/.
+Assemble dark-sky-reserve.html from src/.
 
 The sources are split for the sake of reading them; the deliverable is a
 single self-contained page. The sky plate is inlined as a data URI so the
@@ -19,8 +19,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SRC = os.path.join(ROOT, 'src')
-OUT = os.path.join(ROOT, 'grassfield.html')
-OUT_ARTIFACT = os.path.join(ROOT, 'grassfield.artifact.html')
+OUT = os.path.join(ROOT, 'dark-sky-reserve.html')
+OUT_ARTIFACT = os.path.join(ROOT, 'dark-sky-reserve.artifact.html')
 
 SKY_JPG = os.path.join(ROOT, 'assets', 'sky.jpg')
 SKY_LIGHT = os.path.join(ROOT, 'assets', 'sky_light.json')

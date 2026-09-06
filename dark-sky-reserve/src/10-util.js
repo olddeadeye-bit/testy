@@ -1,5 +1,5 @@
 /* =====================================================================
-   Grassfield - a walkable night prairie.
+   Dark Sky Reserve - a walkable night landscape.
 
    The sky you are standing under is the original 360 photograph, mapped
    onto a dome. That part is exact: stars are far enough away that a

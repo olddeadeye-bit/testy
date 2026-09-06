@@ -28,7 +28,7 @@ body.noPost #vignetteFallback{opacity:1}
   backdrop-filter:blur(2px);transition:opacity .6s ease,visibility .6s}
 .overlay.gone{opacity:0;visibility:hidden;pointer-events:none}
 .gateInner{max-width:640px;padding:32px 34px;text-align:center}
-.gateInner h1{margin:0 0 .35rem;font-size:clamp(38px,7vw,68px);font-weight:200;letter-spacing:.24em;
+.gateInner h1{margin:0 0 .5rem;font-size:clamp(29px,6.2vw,60px);font-weight:200;letter-spacing:.20em;line-height:1.15;
   text-transform:uppercase;text-indent:.24em;
   background:linear-gradient(180deg,#f2f7f3,#93b6a4);-webkit-background-clip:text;background-clip:text;color:transparent;
   filter:drop-shadow(0 0 26px rgba(150,215,180,.20))}

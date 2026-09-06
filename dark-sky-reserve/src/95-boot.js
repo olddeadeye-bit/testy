@@ -187,7 +187,11 @@ function boot() {
     note.innerHTML = isTouch
       ? 'Drag on the left to walk, on the right to look.'
       : 'Mouse to look, WASD to walk. If the cursor stays visible, this page is not ' +
-        'allowed to capture it \u2014 hold the mouse button down to look around instead.';
+        'allowed to capture it \u2014 hold the mouse button down to look around instead.' +
+        '<br><br><span style="opacity:.55">In December 2020 the Yorkshire Dales and the ' +
+        'North York Moors were designated International Dark Sky Reserves together: ' +
+        '3,615 km\u00b2, the largest area in the UK ever designated at once. This is a ' +
+        'walk through that kind of dark.</span>';
 
     const enter = () => {
       gate.classList.add('gone');
@@ -512,7 +516,7 @@ function boot() {
       if (!blob) { toast('could not save the frame'); return; }
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'grassfield-' + Date.now() + '.png';
+      a.download = 'dark-sky-reserve-' + Date.now() + '.png';
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
       toast('frame saved');
@@ -522,7 +526,7 @@ function boot() {
   /** Everything worth knowing if it still will not run somewhere. */
   function diagnostics() {
     const lines = [];
-    lines.push('Grassfield diagnostics');
+    lines.push('Dark Sky Reserve — diagnostics');
     lines.push('userAgent: ' + navigator.userAgent);
     lines.push('devicePixelRatio: ' + devicePixelRatio +
                '   window: ' + innerWidth + 'x' + innerHeight);

@@ -581,7 +581,7 @@ class World {
        than a crash. If it happens, halve the budget and try again. */
     const err = gl.getError();
     if (err === gl.OUT_OF_MEMORY && this.settings.vramBudget > 56) {
-      console.warn('grassfield: out of video memory at ' + w + 'x' + h +
+      console.warn('dark-sky-reserve: out of video memory at ' + w + 'x' + h +
                    ' (' + plan.samples + 'x AA), halving the budget');
       this.settings.vramBudget = Math.max(48, this.settings.vramBudget * 0.5);
       this.rw = this.rh = 0;

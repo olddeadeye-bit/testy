@@ -1,9 +1,34 @@
-# Grassfield
+# Dark Sky Reserve
 
-A walkable night prairie, built from a single 360° photograph.
+A night walk under the darkest skies in Britain, built from a single 360°
+photograph.
 
-Open **`grassfield.html`**. That is the whole thing — one file, no server, no
-install, no network. Double-click it.
+Open **`dark-sky-reserve.html`**. That is the whole thing — one file, no server,
+no install, no network. Double-click it.
+
+---
+
+## The dark it is about
+
+In December 2020 the Yorkshire Dales and the North York Moors were designated
+**International Dark Sky Reserves** together — a combined **3,615 km²**, the
+largest area in the UK, and one of the largest in Europe, to be designated at
+once. A Reserve is a dark core protected by a surrounding buffer where lighting
+is controlled, which is why they read as one continuous piece of sky rather than
+two islands of it.
+
+That is the thing this is trying to put you inside: not a picture of a night sky,
+but the experience of standing in one — a horizon with no glow on it, a Milky Way
+bright enough to cast the faintest light on the grass, and nothing to hear but the
+wind moving through the field.
+
+The sky here is a real 360° night photograph rather than a survey of the Dales
+themselves, so treat it as the same *kind* of dark rather than a specific
+hillside. Everything below the skyline is reconstructed.
+
+Sources: [Yorkshire Dales National Park Authority](https://www.yorkshiredales.org.uk/park-authority/looking-after/dark-sky/) ·
+[DarkSky International](https://darksky.org/news/uk-dark-sky-reserve/) ·
+[BBC Sky at Night](https://www.skyatnightmagazine.com/advice/yorkshire-dales-north-york-moors-dark-sky-reserves)
 
 ---
 
@@ -129,7 +154,7 @@ The single HTML file is generated. Do not edit it — edit `src/` and rebuild.
 
 ```
 python3 tools/build_sky.py     # panorama  -> assets/sky.jpg + sky_light.json
-python3 tools/build.py         # src/*     -> grassfield.html
+python3 tools/build.py         # src/*     -> dark-sky-reserve.html
 python3 tools/compare.py shot.png 18.3 1.1 68     # check it against the plate
 ```
 
