@@ -131,7 +131,11 @@ class Post {
   resize(w, h, levels) {
     for (const t of this.chain) t.free();
     this.chain = [];
-    let cw = Math.max(1, w >> 1), ch = Math.max(1, h >> 1);
+    /* Start at a quarter, not a half. The bloom chain is a dozen
+       full-screen render passes on a half-float target, and on a
+       tile-based GPU each one flushes tile memory - it was costing four
+       times the bandwidth it needed to for a glow this soft. */
+    let cw = Math.max(1, w >> 2), ch = Math.max(1, h >> 2);
     for (let i = 0; i < levels && cw > 4 && ch > 4; i++) {
       this.chain.push(this.glw.target(cw, ch, {}));
       cw = Math.max(1, cw >> 1); ch = Math.max(1, ch >> 1);

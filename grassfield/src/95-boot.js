@@ -21,6 +21,8 @@ const CONTROLS = [
   { k: 'density',     label: 'Grass density',      min: 0.2,  max: 2.0,  step: 0.05 },
   { k: 'bladeHeight', label: 'Grass height',       min: 0.4,  max: 1.6,  step: 0.02, unit: ' m' },
   { k: 'grassRange',  label: 'Grass distance',     min: 40,   max: 165,  step: 5, unit: ' m' },
+  { k: 'maxBlades',   label: 'Grass budget',       min: 40,   max: 1200, step: 20, unit: 'k',
+    note: 'Ceiling on blades submitted per frame. Tile-based GPUs (Apple Silicon especially) quietly drop geometry once their primitive buffer overflows - 60 fps, no error, no grass. If the field vanishes, lower this.' },
   { k: 'trail',       label: 'Trail memory',       min: 0,    max: 120,  step: 1, unit: ' s' },
   { k: 'stars',       label: 'Zenith stars',       min: 0,    max: 2,    step: 0.05 },
   { k: 'fireflies',   label: 'Fireflies',          min: 0,    max: 1,    step: 0.05,
@@ -251,8 +253,13 @@ function boot() {
        render target we own. The old version reallocated ~460 MB of
        buffers for a 0.3% area change, twice a second. */
     const prev = world.autoScale;
-    if (ms > 22 && world.autoScale > 0.40) world.autoScale = Math.max(0.40, world.autoScale - 0.10);
-    else if (ms < 10 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.05);
+    /* Comes down fast and goes back up slowly. autoScale now also scales
+       the blade budget, so this is the loop that actually finds a load
+       the machine can carry - it could not do that before, when the
+       instance count was fixed by a camera-centred square. */
+    if (ms > 28) world.autoScale = Math.max(0.22, world.autoScale - 0.18);
+    else if (ms > 20) world.autoScale = Math.max(0.22, world.autoScale - 0.08);
+    else if (ms < 11 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.04);
 
     const now = performance.now();
     const moved = Math.abs(world.autoScale / (prev || 1) - 1);
@@ -519,7 +526,13 @@ function boot() {
       lines.push('MAX_TEXTURE_SIZE: ' + gl.getParameter(gl.MAX_TEXTURE_SIZE) +
                  '   MAX_RENDERBUFFER_SIZE: ' + gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) +
                  '   MAX_SAMPLES: ' + gl.getParameter(gl.MAX_SAMPLES));
-      lines.push('fps: ' + world.fps.toFixed(1) + '   blades submitted: ' + world.grass.instanceCount);
+      lines.push('fps: ' + world.fps.toFixed(1) + '   blades submitted: ' + world.grass.instanceCount +
+                 '   budget: ' + world.settings.maxBlades + 'k');
+      const st = world.selfTest || {};
+      lines.push('self-test  vertexTextureFetch: ' + st.vertexTextureFetch +
+                 '   halfFloatTargets: ' + st.halfFloatTargets +
+                 '   msaaResolve: ' + st.msaaResolve);
+      if (st.notes && st.notes.length) lines.push('self-test notes: ' + st.notes.join(' | '));
       lines.push('glGetError: ' + gl.getError() + '   contextLost: ' + gl.isContextLost());
       lines.push('settings: ' + JSON.stringify(world.settings));
     } else {

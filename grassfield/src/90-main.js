@@ -41,7 +41,12 @@ const DEFAULTS = {
   /* Megabytes of video memory the render targets may use. This is the
      setting that stops a high-DPI display asking the GPU for the better
      part of a gigabyte and getting a half-painted frame back. */
-  vramBudget: 160
+  vramBudget: 160,
+  /* Thousands of blades that may be submitted in a frame. Tile-based
+     GPUs drop geometry silently once their binning buffer overflows,
+     and nothing in the API says where that is - so this is a ceiling
+     you can move until the field stops disappearing. */
+  maxBlades: 180
 };
 
 /* A phone is not a small desktop: the GPU is tile-based, sustained load
@@ -58,8 +63,8 @@ const QUALITY_PRESETS = {
   phone:  { renderScale: 0.60, density: 0.22, grassRange: 38, bloomLevels: 4, msaa: 1 },
   low:    { renderScale: 0.62, density: 0.35, grassRange: 70,  bloomLevels: 4, msaa: 1 },
   medium: { renderScale: 0.85, density: 0.65, grassRange: 100, bloomLevels: 5, msaa: 2 },
-  high:   { renderScale: 1.00, density: 1.00, grassRange: 130, bloomLevels: 6, msaa: 4 },
-  ultra:  { renderScale: 1.25, density: 1.55, grassRange: 130, bloomLevels: 6, msaa: 4 }
+  high:   { renderScale: 1.00, density: 1.00, grassRange: 130, bloomLevels: 5, msaa: 4 },
+  ultra:  { renderScale: 1.25, density: 1.55, grassRange: 130, bloomLevels: 5, msaa: 4 }
 };
 
 /* ------------------------------------------------------------------ */
@@ -79,6 +84,7 @@ class World {
       this.settings.msaa = false;
       this.settings.vramBudget = 64;
       this.settings.trail = 12;
+      this.settings.maxBlades = 90;
     }
     if (SAFE_MODE) {
       /* this machine has already fallen over once - come back gently */
@@ -86,6 +92,7 @@ class World {
       this.settings.density = Math.min(this.settings.density, 0.5);
       this.settings.grassRange = Math.min(this.settings.grassRange, 70);
       this.settings.vramBudget = Math.min(this.settings.vramBudget, 64);
+      this.settings.maxBlades = Math.min(this.settings.maxBlades, 90);
     }
 
     /* ---------------- textures -------------------------------------- */
@@ -99,7 +106,8 @@ class World {
     this.heightData = this.bakeHeight(this.heightRes);
     this.heightTex = this.glw.texture({
       w: this.heightRes, h: this.heightRes, internal: gl.R16F, format: gl.RED,
-      type: gl.FLOAT, data: this.heightData, wrap: gl.REPEAT, filter: gl.LINEAR
+      type: gl.HALF_FLOAT, data: toHalfFloat(this.heightData),
+      wrap: gl.REPEAT, filter: gl.LINEAR
     });
 
     this.fieldPeriod = 64;
@@ -182,6 +190,20 @@ class World {
     this.frameMs = 16;
     this.fps = 60;
     this.autoScale = 1.0;
+
+    /* Prove the pipeline works here before trusting it. Anything that
+       fails is switched off rather than left to misbehave silently. */
+    this.selfTest = runSelfTest(this.glw, this.heightTex,
+                                this.heightData, this.heightRes);
+    if (this.selfTest.halfFloatTargets === false && this.glw.hdr) {
+      this.glw.hdr = false;
+      this.glw.hdrFormat = gl.RGBA8;
+      this.selfTest.notes.push('fell back to 8-bit render targets');
+    }
+    if (this.selfTest.msaaResolve === false && this.settings.msaa) {
+      this.settings.msaa = false;
+      this.selfTest.notes.push('fell back to no multisampling');
+    }
 
     this.env = this.makeEnv();
   }
@@ -412,6 +434,7 @@ class World {
       get partStrength() { return 0.9; },
       get density() { return w._density; },
       get grassRange() { return w._range; },
+      get bladeBudget() { return Math.max(20000, w.settings.maxBlades * 1000 * w.autoScale); },
       get bladeHeight() { return w.settings.bladeHeight; },
       get bladeWidth() { return 0.0086; },
       get grassDark() { return w.grassDark; },

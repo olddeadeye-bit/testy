@@ -215,6 +215,35 @@ class GL {
   }
 }
 
+/* IEEE-754 binary32 -> binary16. R16F storage wants half-float data; the
+   spec also permits handing it FLOAT and letting the driver convert, but
+   that conversion path is exactly the sort of thing implementations
+   disagree about, and a height texture that reads back wrong puts every
+   blade of grass somewhere other than the ground. */
+function toHalfFloat(src) {
+  const out = new Uint16Array(src.length);
+  const f = new Float32Array(1);
+  const i = new Int32Array(f.buffer);
+  for (let k = 0; k < src.length; k++) {
+    f[0] = src[k];
+    const x = i[0];
+    const sign = (x >>> 16) & 0x8000;
+    let exp = (x >>> 23) & 0xff;
+    let man = x & 0x7fffff;
+    if (exp === 255) { out[k] = sign | 0x7c00 | (man ? 0x200 : 0); continue; }
+    let e = exp - 127 + 15;
+    if (e >= 31) { out[k] = sign | 0x7c00; continue; }
+    if (e <= 0) {
+      if (e < -10) { out[k] = sign; continue; }
+      man = (man | 0x800000) >> (1 - e);
+      out[k] = sign | (man >> 13);
+      continue;
+    }
+    out[k] = sign | (e << 10) | (man >> 13);
+  }
+  return out;
+}
+
 /* A single oversized triangle covers the screen with no seam down the
    middle and one fewer vertex than a quad. Used by every full-screen pass. */
 const FULLSCREEN_VS = `#version 300 es

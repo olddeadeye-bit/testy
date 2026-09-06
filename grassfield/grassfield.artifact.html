@@ -574,6 +574,35 @@ class GL {
   }
 }
 
+/* IEEE-754 binary32 -> binary16. R16F storage wants half-float data; the
+   spec also permits handing it FLOAT and letting the driver convert, but
+   that conversion path is exactly the sort of thing implementations
+   disagree about, and a height texture that reads back wrong puts every
+   blade of grass somewhere other than the ground. */
+function toHalfFloat(src) {
+  const out = new Uint16Array(src.length);
+  const f = new Float32Array(1);
+  const i = new Int32Array(f.buffer);
+  for (let k = 0; k < src.length; k++) {
+    f[0] = src[k];
+    const x = i[0];
+    const sign = (x >>> 16) & 0x8000;
+    let exp = (x >>> 23) & 0xff;
+    let man = x & 0x7fffff;
+    if (exp === 255) { out[k] = sign | 0x7c00 | (man ? 0x200 : 0); continue; }
+    let e = exp - 127 + 15;
+    if (e >= 31) { out[k] = sign | 0x7c00; continue; }
+    if (e <= 0) {
+      if (e < -10) { out[k] = sign; continue; }
+      man = (man | 0x800000) >> (1 - e);
+      out[k] = sign | (man >> 13);
+      continue;
+    }
+    out[k] = sign | (e << 10) | (man >> 13);
+  }
+  return out;
+}
+
 /* A single oversized triangle covers the screen with no seam down the
    middle and one fewer vertex than a quad. Used by every full-screen pass. */
 const FULLSCREEN_VS = `#version 300 es
@@ -636,6 +665,18 @@ vec4 hash41(float p){
   p4 += dot(p4, p4.wzxy + 33.33);
   return fract((p4.xxyz + p4.yzzw) * p4.zywx);
 }
+/* Hash a 2D lattice cell. Feeding a raw instance id into a hash is a
+   precision trap: at 900k instances the value needs 20 bits of mantissa
+   before fract() ever runs, leaving about 4 bits of randomness. Cell
+   coordinates stay small, so this is both better distributed and stable
+   in world space - a blade keeps its identity no matter how the grid
+   covering it happens to be indexed this frame. */
+vec4 hash42(vec2 p){
+  vec4 p4 = fract(p.xyxy * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+  p4 += dot(p4, p4.wzxy + 33.33);
+  return fract((p4.xxyz + p4.yzzw) * p4.zywx);
+}
+
 vec3 hash33(vec3 p3){
   p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
   p3 += dot(p3, p3.yxz + 33.33);
@@ -661,7 +702,7 @@ vec2 dirToEquirect(vec3 d){
 
 /* Photograph as linear radiance, black point restored. */
 vec3 skyPlate(vec3 d){
-  vec3 c = texture(uSky, dirToEquirect(d)).rgb;
+  vec3 c = textureLod(uSky, dirToEquirect(d), 0.0).rgb;
   c = max((c - uSkyLift) / uSkyScale, vec3(0.0));
   return srgbToLinear(c);
 }
@@ -735,8 +776,8 @@ uniform sampler2D uField;
 uniform float uFieldPeriod;
 uniform vec2 uWind;          /* prevailing wind, unit length, world XZ */
 
-vec4 field(vec2 world){ return texture(uField, world / uFieldPeriod); }
-vec4 fieldAt(vec2 world, float scale){ return texture(uField, world / (uFieldPeriod * scale)); }
+vec4 field(vec2 world){ return textureLod(uField, world / uFieldPeriod, 0.0); }
+vec4 fieldAt(vec2 world, float scale){ return textureLod(uField, world / (uFieldPeriod * scale), 0.0); }
 float fieldR(vec2 world, float scale){ return fieldAt(world, scale).r; }
 float fieldG(vec2 world, float scale){ return fieldAt(world, scale).g; }
 
@@ -766,10 +807,10 @@ uniform sampler2D uDetail;
 uniform float uDetailPeriod;
 uniform float uTussock;
 
-vec4 detail(vec2 world){ return texture(uDetail, world / uDetailPeriod); }
+vec4 detail(vec2 world){ return textureLod(uDetail, world / uDetailPeriod, 0.0); }
 
 float groundHeight(vec2 world){
-  return texture(uHeight, world / uHeightPeriod).r * uHeightScale;
+  return textureLod(uHeight, world / uHeightPeriod, 0.0).r * uHeightScale;
 }
 
 /* Grass does not grow on a plane. It grows in tussocks, and the hollows
@@ -792,7 +833,7 @@ uniform vec3 uTrampleWin;   /* x,y = window origin (world), z = window size */
 float trampleAt(vec2 world){
   vec2 uv = (world - uTrampleWin.xy) / uTrampleWin.z;
   if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 0.0;
-  return texture(uTrample, uv).r;
+  return textureLod(uTrample, uv, 0.0).r;
 }
 
 /* Sky sheen.
@@ -1141,9 +1182,11 @@ uniform vec3 uCam;
 uniform vec2 uFwdXZ;
 uniform float uCullDot;
 
-uniform vec2 uOrigin;        /* snapped grid origin, world XZ */
+uniform vec2 uOriginCell;    /* integer world cell of grid slot (0,0) */
 uniform float uCell;
-uniform int  uGridN;
+uniform int  uGridW;
+uniform int  uGridH;
+uniform int  uInstanceBase;  /* draws are chunked; this is the offset */
 uniform vec2 uRange;         /* radial band this ring covers */
 uniform vec2 uFadeIn;
 uniform vec2 uFadeOut;
@@ -1173,12 +1216,13 @@ out float vAO;
 void cull(){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }
 
 void main(){
-  int id = gl_InstanceID;
-  vec2 cellIdx = vec2(float(id % uGridN), float(id / uGridN)) - float(uGridN) * 0.5;
+  int id = gl_InstanceID + uInstanceBase;
+  int gz = id / uGridW;
+  if (gz >= uGridH) { cull(); return; }
+  vec2 cellF = uOriginCell + vec2(float(id - gz * uGridW), float(gz));
 
-  float hid = float(id) * 1.0 + uSeed;
-  vec4 h0 = hash41(hid);
-  vec2 base = uOrigin + (cellIdx + 0.5 + (h0.xy - 0.5) * 0.94) * uCell;
+  vec4 h0 = hash42(cellF + uSeed);
+  vec2 base = (cellF + 0.5 + (h0.xy - 0.5) * 0.94) * uCell;
 
   vec2 toCam = base - uCam.xz;
   float dist = length(toCam);
@@ -1198,7 +1242,7 @@ void main(){
              * (1.0 - smoothstep(uFadeOut.x, uFadeOut.y, dist));
   if (fade < 0.02) { cull(); return; }
 
-  vec4 h1 = hash41(hid * 1.6180339 + 7.31);
+  vec4 h1 = hash42(cellF * 1.6180339 + (uSeed + 7.31));
 
   /* The same mound field the ground is displaced by. Grass grows longer
      on a tussock and thins out in the hollow between them, and coupling
@@ -1396,6 +1440,9 @@ void main(){
 
 /* ------------------------------------------------------------------ */
 
+/* Never hand a driver more than this many instances in one draw. */
+const INSTANCE_CHUNK = 65536;
+
 class GrassRing {
   constructor(cfg) { Object.assign(this, cfg); }
 }
@@ -1455,6 +1502,53 @@ class Grass {
   /** Blades actually submitted this frame - the readout shows it. */
   get instanceCount() { return this._count | 0; }
 
+  /**
+   * The lattice covering what can actually be seen, in whole world cells.
+   *
+   * The grid used to be a square centred on the camera, of which the view
+   * frustum only ever covers about a third - the rest was submitted purely
+   * to be thrown away by the cull in the vertex shader, still paying a
+   * vertex invocation per blade per vertex. Fitting the box to the visible
+   * sector is free and cuts what is submitted by roughly two thirds.
+   *
+   * Returned in cell coordinates, so a blade's identity comes from where
+   * it sits in the world rather than from where it happened to land in
+   * this frame's grid, and it does not shuffle as you turn.
+   */
+  visibleBox(env, r1, cell) {
+    const cx = env.camPos[0], cz = env.camPos[2];
+    /* the same half-angle the vertex shader culls to, plus a margin */
+    const half = Math.min(Math.acos(clamp(env.cullDot, -1, 1)) + 0.12, Math.PI);
+    const yaw = Math.atan2(env.fwdXZ[0], -env.fwdXZ[1]);
+
+    /* blades inside the near guard are never frustum-culled, because when
+       you look straight down they are all around you */
+    const near = Math.min(r1, 4.5);
+    let minX = cx - near, maxX = cx + near;
+    let minZ = cz - near, maxZ = cz + near;
+
+    if (half < Math.PI - 1e-3) {
+      const N = 14;
+      for (let i = 0; i <= N; i++) {
+        const a = yaw - half + (2 * half) * (i / N);
+        const x = cx + Math.sin(a) * r1, z = cz - Math.cos(a) * r1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+      }
+    } else {
+      minX = cx - r1; maxX = cx + r1; minZ = cz - r1; maxZ = cz + r1;
+    }
+
+    const x0 = Math.floor(minX / cell), z0 = Math.floor(minZ / cell);
+    return {
+      x0, z0,
+      w: Math.max(1, Math.ceil(maxX / cell) - x0 + 1),
+      h: Math.max(1, Math.ceil(maxZ / cell) - z0 + 1)
+    };
+  }
+
   draw(env) {
     const gl = this.glw.gl, p = this.prog;
     gl.useProgram(p);
@@ -1493,17 +1587,45 @@ class Grass {
        hardware that needs the setting. Quantised so that a small change
        in the auto-quality scaler does not reshuffle the whole field. */
     const dens = Math.max(0.06, Math.round(env.density * 10) / 10);
+
+    /* Plan every ring first, then hold the whole frame to a budget.
+       A tile-based GPU bins primitives into a fixed buffer before it
+       shades anything, and when that buffer overflows the driver drops
+       geometry rather than reporting an error - the frame rate stays at
+       60 and the grass simply is not there. Nothing in WebGL exposes
+       where that limit is, so the only safe move is not to approach it,
+       and to make the ceiling adjustable so it can be found. */
+    const plan = [];
+    let want = 0;
     for (const r of this.rings) {
       if (r.r0 > env.grassRange) continue;
       const r1 = Math.min(r.r1, env.grassRange);
       const cell = r.cell / Math.sqrt(dens);
-      let gridN = Math.min(1100, Math.ceil((r1 * 2) / cell));
-      if (gridN % 2) gridN++;
+      const box = this.visibleBox(env, r1, cell);
+      plan.push({ r, r1, cell, box, coarsen: 1 });
+      want += box.w * box.h;
+    }
+    if (want > env.bladeBudget) {
+      /* coarsen every ring together so the field thins evenly */
+      const k = Math.sqrt(want / env.bladeBudget);
+      for (const q of plan) {
+        q.cell *= k;
+        q.coarsen = k;
+        q.box = this.visibleBox(env, q.r1, q.cell);
+      }
+    }
+
+    for (const q of plan) {
+      const r = q.r, r1 = q.r1, cell = q.cell, box = q.box;
       /* fewer blades, each a little broader, so thinning the field costs
          coverage far more slowly than it costs vertices */
-      const widen = clamp(1 + 0.4 * (1 / Math.sqrt(dens) - 1), 1, 2.1);
+      const widen = clamp(1 + 0.4 * (1 / Math.sqrt(dens) - 1), 1, 2.1)
+                  * clamp(1 + 0.55 * (q.coarsen - 1), 1, 2.6);
+
       gl.uniform1f(p.u.uCell, cell);
-      gl.uniform1i(p.u.uGridN, gridN);
+      gl.uniform2f(p.u.uOriginCell, box.x0, box.z0);
+      gl.uniform1i(p.u.uGridW, box.w);
+      gl.uniform1i(p.u.uGridH, box.h);
       gl.uniform2f(p.u.uRange, r.r0, r1);
       gl.uniform2f(p.u.uFadeIn, r.fadeIn[0], r.fadeIn[1]);
       gl.uniform2f(p.u.uFadeOut,
@@ -1513,15 +1635,20 @@ class Grass {
       gl.uniform1f(p.u.uWidthMul, r.width * widen);
       gl.uniform1f(p.u.uViewFace, r.viewFace);
       gl.uniform1f(p.u.uCurve, r.curve);
-      /* re-centre the lattice on the camera, snapped to a whole cell so
-         blades stay put in the world instead of crawling with you */
-      gl.uniform2f(p.u.uOrigin,
-        Math.round(env.camPos[0] / cell) * cell,
-        Math.round(env.camPos[2] / cell) * cell);
 
-      const n = gridN * gridN;
+      /* Chunked. A single draw of a million instances is more than some
+         drivers will take in one piece: a tile-based GPU can overflow the
+         buffer it bins primitives into and silently drop geometry, and
+         ANGLE splits oversized instanced draws itself, which has not
+         always got gl_InstanceID right across the split. Splitting it
+         here, with an explicit base, keeps it predictable. */
+      const n = box.w * box.h;
       gl.bindVertexArray(r.mesh.vao);
-      gl.drawElementsInstanced(gl.TRIANGLES, r.mesh.count, gl.UNSIGNED_SHORT, 0, n);
+      for (let base = 0; base < n; base += INSTANCE_CHUNK) {
+        gl.uniform1i(p.u.uInstanceBase, base);
+        gl.drawElementsInstanced(gl.TRIANGLES, r.mesh.count, gl.UNSIGNED_SHORT, 0,
+                                 Math.min(INSTANCE_CHUNK, n - base));
+      }
       total += n;
     }
     gl.bindVertexArray(null);
@@ -1779,7 +1906,11 @@ class Post {
   resize(w, h, levels) {
     for (const t of this.chain) t.free();
     this.chain = [];
-    let cw = Math.max(1, w >> 1), ch = Math.max(1, h >> 1);
+    /* Start at a quarter, not a half. The bloom chain is a dozen
+       full-screen render passes on a half-float target, and on a
+       tile-based GPU each one flushes tile memory - it was costing four
+       times the bandwidth it needed to for a glow this soft. */
+    let cw = Math.max(1, w >> 2), ch = Math.max(1, h >> 2);
     for (let i = 0; i < levels && cw > 4 && ch > 4; i++) {
       this.chain.push(this.glw.target(cw, ch, {}));
       cw = Math.max(1, cw >> 1); ch = Math.max(1, ch >> 1);
@@ -2240,6 +2371,149 @@ class Input {
 }
 
 
+/* ---- 88-selftest.js -------------------------------------------- */
+/* ===================================================================
+   Startup self-test.
+
+   Written because three rounds of diagnosis were spent guessing at a
+   machine I cannot run on. Every one of these features is one the
+   renderer silently depends on: if the driver quietly does the wrong
+   thing, the symptom is a black or flickering field with no error, no
+   exception and no clue. So rather than assume, render something with a
+   known answer and read it back.
+
+   Anything that fails is switched off rather than left to misbehave, and
+   the result is printed by the Diagnostics button.
+   =================================================================== */
+
+const ST_FS_VALUE = CHUNK.head + `
+in float vV; out vec4 o;
+void main(){ o = vec4(clamp(vV, 0.0, 1.0), 0.0, 0.0, 1.0); }`;
+
+const ST_VS_VTF = CHUNK.head + `
+uniform sampler2D uTex;
+uniform vec2 uUV;
+out float vV;
+void main(){
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  /* the whole point: sample in the VERTEX stage, as the grass does */
+  vV = textureLod(uTex, uUV, 0.0).r;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const ST_VS_CONST = CHUNK.head + `
+uniform float uValue;
+out float vV;
+void main(){
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  vV = uValue;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const ST_FS_SAMPLE = CHUNK.head + `
+in vec2 vUv; out vec4 o;
+uniform sampler2D uTex;
+void main(){ o = vec4(clamp(texture(uTex, vUv).r, 0.0, 1.0), 0.0, 0.0, 1.0); }`;
+
+function runSelfTest(glw, heightTex, heightData, heightRes) {
+  const gl = glw.gl;
+  const R = { vertexTextureFetch: null, halfFloatTargets: null, msaaResolve: null, notes: [] };
+  const made = [];
+  const px = new Uint8Array(4 * 4 * 4);
+
+  const readRed = () => {
+    gl.readPixels(0, 0, 4, 4, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return px[0];
+  };
+
+  try {
+    const probe = glw.target(4, 4, { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE, filter: gl.NEAREST });
+    made.push(probe);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+
+    /* ---- 1. vertex texture fetch ---------------------------------- */
+    try {
+      const prog = glw.program(ST_VS_VTF, ST_FS_VALUE, 'selftest.vtf');
+      const tx = 137, ty = 241;
+      const expect = Math.round(heightData[ty * heightRes + tx] * 255);
+      glw.bindTarget(probe);
+      gl.useProgram(prog);
+      glw.bindTex(0, heightTex);
+      gl.uniform1i(prog.u.uTex, 0);
+      gl.uniform2f(prog.u.uUV, (tx + 0.5) / heightRes, (ty + 0.5) / heightRes);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const got = readRed();
+      R.vertexTextureFetch = Math.abs(got - expect) <= 4;
+      if (!R.vertexTextureFetch) R.notes.push('vertex texture fetch read ' + got + ', expected ' + expect);
+      gl.deleteProgram(prog);
+    } catch (e) { R.vertexTextureFetch = false; R.notes.push('vtf: ' + e.message); }
+
+    /* ---- 2. half-float render targets ------------------------------ */
+    if (glw.hdr) {
+      try {
+        const hdrT = glw.target(4, 4, { filter: gl.NEAREST });
+        made.push(hdrT);
+        const pc = glw.program(ST_VS_CONST, ST_FS_VALUE, 'selftest.const');
+        const ps = glw.program(FULLSCREEN_VS, ST_FS_SAMPLE, 'selftest.sample');
+        glw.bindTarget(hdrT);
+        gl.useProgram(pc);
+        gl.uniform1f(pc.u.uValue, 0.5);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        glw.bindTarget(probe);
+        gl.useProgram(ps);
+        glw.bindTex(0, hdrT.tex);
+        gl.uniform1i(ps.u.uTex, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        const got = readRed();
+        R.halfFloatTargets = Math.abs(got - 128) <= 6;
+        if (!R.halfFloatTargets) R.notes.push('half-float target read ' + got + ', expected 128');
+        gl.deleteProgram(pc); gl.deleteProgram(ps);
+      } catch (e) { R.halfFloatTargets = false; R.notes.push('hdr: ' + e.message); }
+    } else {
+      R.halfFloatTargets = false;
+      R.notes.push('no float colour buffer extension; using 8-bit targets');
+    }
+
+    /* ---- 3. multisample resolve ------------------------------------ */
+    try {
+      const ms = glw.targetMS(4, 4, 4, { depth: true, filter: gl.NEAREST });
+      made.push(ms);
+      if (!ms.resolve) {
+        R.msaaResolve = false;
+        R.notes.push('no multisampled target available');
+      } else {
+        const pc = glw.program(ST_VS_CONST, ST_FS_VALUE, 'selftest.msconst');
+        const ps = glw.program(FULLSCREEN_VS, ST_FS_SAMPLE, 'selftest.mssample');
+        glw.bindTarget(ms, true);
+        gl.useProgram(pc);
+        gl.uniform1f(pc.u.uValue, 0.5);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        ms.resolve();
+        glw.bindTarget(probe);
+        gl.useProgram(ps);
+        glw.bindTex(0, ms.tex);
+        gl.uniform1i(ps.u.uTex, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        const got = readRed();
+        R.msaaResolve = Math.abs(got - 128) <= 6;
+        if (!R.msaaResolve) R.notes.push('msaa resolve read ' + got + ', expected 128');
+        gl.deleteProgram(pc); gl.deleteProgram(ps);
+      }
+    } catch (e) { R.msaaResolve = false; R.notes.push('msaa: ' + e.message); }
+
+    const err = gl.getError();
+    if (err) R.notes.push('glGetError after self-test: ' + err);
+  } catch (e) {
+    R.notes.push('self-test could not run: ' + e.message);
+  } finally {
+    for (const t of made) { try { t.free(); } catch (e) {} }
+    glw.bindTarget(null);
+  }
+  return R;
+}
+
+
 /* ---- 90-main.js ------------------------------------------------ */
 /* ===================================================================
    The world, and the loop that runs it.
@@ -2284,7 +2558,12 @@ const DEFAULTS = {
   /* Megabytes of video memory the render targets may use. This is the
      setting that stops a high-DPI display asking the GPU for the better
      part of a gigabyte and getting a half-painted frame back. */
-  vramBudget: 160
+  vramBudget: 160,
+  /* Thousands of blades that may be submitted in a frame. Tile-based
+     GPUs drop geometry silently once their binning buffer overflows,
+     and nothing in the API says where that is - so this is a ceiling
+     you can move until the field stops disappearing. */
+  maxBlades: 180
 };
 
 /* A phone is not a small desktop: the GPU is tile-based, sustained load
@@ -2301,8 +2580,8 @@ const QUALITY_PRESETS = {
   phone:  { renderScale: 0.60, density: 0.22, grassRange: 38, bloomLevels: 4, msaa: 1 },
   low:    { renderScale: 0.62, density: 0.35, grassRange: 70,  bloomLevels: 4, msaa: 1 },
   medium: { renderScale: 0.85, density: 0.65, grassRange: 100, bloomLevels: 5, msaa: 2 },
-  high:   { renderScale: 1.00, density: 1.00, grassRange: 130, bloomLevels: 6, msaa: 4 },
-  ultra:  { renderScale: 1.25, density: 1.55, grassRange: 130, bloomLevels: 6, msaa: 4 }
+  high:   { renderScale: 1.00, density: 1.00, grassRange: 130, bloomLevels: 5, msaa: 4 },
+  ultra:  { renderScale: 1.25, density: 1.55, grassRange: 130, bloomLevels: 5, msaa: 4 }
 };
 
 /* ------------------------------------------------------------------ */
@@ -2322,6 +2601,7 @@ class World {
       this.settings.msaa = false;
       this.settings.vramBudget = 64;
       this.settings.trail = 12;
+      this.settings.maxBlades = 90;
     }
     if (SAFE_MODE) {
       /* this machine has already fallen over once - come back gently */
@@ -2329,6 +2609,7 @@ class World {
       this.settings.density = Math.min(this.settings.density, 0.5);
       this.settings.grassRange = Math.min(this.settings.grassRange, 70);
       this.settings.vramBudget = Math.min(this.settings.vramBudget, 64);
+      this.settings.maxBlades = Math.min(this.settings.maxBlades, 90);
     }
 
     /* ---------------- textures -------------------------------------- */
@@ -2342,7 +2623,8 @@ class World {
     this.heightData = this.bakeHeight(this.heightRes);
     this.heightTex = this.glw.texture({
       w: this.heightRes, h: this.heightRes, internal: gl.R16F, format: gl.RED,
-      type: gl.FLOAT, data: this.heightData, wrap: gl.REPEAT, filter: gl.LINEAR
+      type: gl.HALF_FLOAT, data: toHalfFloat(this.heightData),
+      wrap: gl.REPEAT, filter: gl.LINEAR
     });
 
     this.fieldPeriod = 64;
@@ -2425,6 +2707,20 @@ class World {
     this.frameMs = 16;
     this.fps = 60;
     this.autoScale = 1.0;
+
+    /* Prove the pipeline works here before trusting it. Anything that
+       fails is switched off rather than left to misbehave silently. */
+    this.selfTest = runSelfTest(this.glw, this.heightTex,
+                                this.heightData, this.heightRes);
+    if (this.selfTest.halfFloatTargets === false && this.glw.hdr) {
+      this.glw.hdr = false;
+      this.glw.hdrFormat = gl.RGBA8;
+      this.selfTest.notes.push('fell back to 8-bit render targets');
+    }
+    if (this.selfTest.msaaResolve === false && this.settings.msaa) {
+      this.settings.msaa = false;
+      this.selfTest.notes.push('fell back to no multisampling');
+    }
 
     this.env = this.makeEnv();
   }
@@ -2655,6 +2951,7 @@ class World {
       get partStrength() { return 0.9; },
       get density() { return w._density; },
       get grassRange() { return w._range; },
+      get bladeBudget() { return Math.max(20000, w.settings.maxBlades * 1000 * w.autoScale); },
       get bladeHeight() { return w.settings.bladeHeight; },
       get bladeWidth() { return 0.0086; },
       get grassDark() { return w.grassDark; },
@@ -2991,6 +3288,8 @@ const CONTROLS = [
   { k: 'density',     label: 'Grass density',      min: 0.2,  max: 2.0,  step: 0.05 },
   { k: 'bladeHeight', label: 'Grass height',       min: 0.4,  max: 1.6,  step: 0.02, unit: ' m' },
   { k: 'grassRange',  label: 'Grass distance',     min: 40,   max: 165,  step: 5, unit: ' m' },
+  { k: 'maxBlades',   label: 'Grass budget',       min: 40,   max: 1200, step: 20, unit: 'k',
+    note: 'Ceiling on blades submitted per frame. Tile-based GPUs (Apple Silicon especially) quietly drop geometry once their primitive buffer overflows - 60 fps, no error, no grass. If the field vanishes, lower this.' },
   { k: 'trail',       label: 'Trail memory',       min: 0,    max: 120,  step: 1, unit: ' s' },
   { k: 'stars',       label: 'Zenith stars',       min: 0,    max: 2,    step: 0.05 },
   { k: 'fireflies',   label: 'Fireflies',          min: 0,    max: 1,    step: 0.05,
@@ -3221,8 +3520,13 @@ function boot() {
        render target we own. The old version reallocated ~460 MB of
        buffers for a 0.3% area change, twice a second. */
     const prev = world.autoScale;
-    if (ms > 22 && world.autoScale > 0.40) world.autoScale = Math.max(0.40, world.autoScale - 0.10);
-    else if (ms < 10 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.05);
+    /* Comes down fast and goes back up slowly. autoScale now also scales
+       the blade budget, so this is the loop that actually finds a load
+       the machine can carry - it could not do that before, when the
+       instance count was fixed by a camera-centred square. */
+    if (ms > 28) world.autoScale = Math.max(0.22, world.autoScale - 0.18);
+    else if (ms > 20) world.autoScale = Math.max(0.22, world.autoScale - 0.08);
+    else if (ms < 11 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.04);
 
     const now = performance.now();
     const moved = Math.abs(world.autoScale / (prev || 1) - 1);
@@ -3489,7 +3793,13 @@ function boot() {
       lines.push('MAX_TEXTURE_SIZE: ' + gl.getParameter(gl.MAX_TEXTURE_SIZE) +
                  '   MAX_RENDERBUFFER_SIZE: ' + gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) +
                  '   MAX_SAMPLES: ' + gl.getParameter(gl.MAX_SAMPLES));
-      lines.push('fps: ' + world.fps.toFixed(1) + '   blades submitted: ' + world.grass.instanceCount);
+      lines.push('fps: ' + world.fps.toFixed(1) + '   blades submitted: ' + world.grass.instanceCount +
+                 '   budget: ' + world.settings.maxBlades + 'k');
+      const st = world.selfTest || {};
+      lines.push('self-test  vertexTextureFetch: ' + st.vertexTextureFetch +
+                 '   halfFloatTargets: ' + st.halfFloatTargets +
+                 '   msaaResolve: ' + st.msaaResolve);
+      if (st.notes && st.notes.length) lines.push('self-test notes: ' + st.notes.join(' | '));
       lines.push('glGetError: ' + gl.getError() + '   contextLost: ' + gl.isContextLost());
       lines.push('settings: ' + JSON.stringify(world.settings));
     } else {

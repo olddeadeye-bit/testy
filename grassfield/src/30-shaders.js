@@ -48,6 +48,18 @@ vec4 hash41(float p){
   p4 += dot(p4, p4.wzxy + 33.33);
   return fract((p4.xxyz + p4.yzzw) * p4.zywx);
 }
+/* Hash a 2D lattice cell. Feeding a raw instance id into a hash is a
+   precision trap: at 900k instances the value needs 20 bits of mantissa
+   before fract() ever runs, leaving about 4 bits of randomness. Cell
+   coordinates stay small, so this is both better distributed and stable
+   in world space - a blade keeps its identity no matter how the grid
+   covering it happens to be indexed this frame. */
+vec4 hash42(vec2 p){
+  vec4 p4 = fract(p.xyxy * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+  p4 += dot(p4, p4.wzxy + 33.33);
+  return fract((p4.xxyz + p4.yzzw) * p4.zywx);
+}
+
 vec3 hash33(vec3 p3){
   p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
   p3 += dot(p3, p3.yxz + 33.33);
@@ -73,7 +85,7 @@ vec2 dirToEquirect(vec3 d){
 
 /* Photograph as linear radiance, black point restored. */
 vec3 skyPlate(vec3 d){
-  vec3 c = texture(uSky, dirToEquirect(d)).rgb;
+  vec3 c = textureLod(uSky, dirToEquirect(d), 0.0).rgb;
   c = max((c - uSkyLift) / uSkyScale, vec3(0.0));
   return srgbToLinear(c);
 }
@@ -147,8 +159,8 @@ uniform sampler2D uField;
 uniform float uFieldPeriod;
 uniform vec2 uWind;          /* prevailing wind, unit length, world XZ */
 
-vec4 field(vec2 world){ return texture(uField, world / uFieldPeriod); }
-vec4 fieldAt(vec2 world, float scale){ return texture(uField, world / (uFieldPeriod * scale)); }
+vec4 field(vec2 world){ return textureLod(uField, world / uFieldPeriod, 0.0); }
+vec4 fieldAt(vec2 world, float scale){ return textureLod(uField, world / (uFieldPeriod * scale), 0.0); }
 float fieldR(vec2 world, float scale){ return fieldAt(world, scale).r; }
 float fieldG(vec2 world, float scale){ return fieldAt(world, scale).g; }
 
@@ -178,10 +190,10 @@ uniform sampler2D uDetail;
 uniform float uDetailPeriod;
 uniform float uTussock;
 
-vec4 detail(vec2 world){ return texture(uDetail, world / uDetailPeriod); }
+vec4 detail(vec2 world){ return textureLod(uDetail, world / uDetailPeriod, 0.0); }
 
 float groundHeight(vec2 world){
-  return texture(uHeight, world / uHeightPeriod).r * uHeightScale;
+  return textureLod(uHeight, world / uHeightPeriod, 0.0).r * uHeightScale;
 }
 
 /* Grass does not grow on a plane. It grows in tussocks, and the hollows
@@ -204,7 +216,7 @@ uniform vec3 uTrampleWin;   /* x,y = window origin (world), z = window size */
 float trampleAt(vec2 world){
   vec2 uv = (world - uTrampleWin.xy) / uTrampleWin.z;
   if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 0.0;
-  return texture(uTrample, uv).r;
+  return textureLod(uTrample, uv, 0.0).r;
 }
 
 /* Sky sheen.

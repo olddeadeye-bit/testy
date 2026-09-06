@@ -20,9 +20,11 @@ uniform vec3 uCam;
 uniform vec2 uFwdXZ;
 uniform float uCullDot;
 
-uniform vec2 uOrigin;        /* snapped grid origin, world XZ */
+uniform vec2 uOriginCell;    /* integer world cell of grid slot (0,0) */
 uniform float uCell;
-uniform int  uGridN;
+uniform int  uGridW;
+uniform int  uGridH;
+uniform int  uInstanceBase;  /* draws are chunked; this is the offset */
 uniform vec2 uRange;         /* radial band this ring covers */
 uniform vec2 uFadeIn;
 uniform vec2 uFadeOut;
@@ -52,12 +54,13 @@ out float vAO;
 void cull(){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }
 
 void main(){
-  int id = gl_InstanceID;
-  vec2 cellIdx = vec2(float(id % uGridN), float(id / uGridN)) - float(uGridN) * 0.5;
+  int id = gl_InstanceID + uInstanceBase;
+  int gz = id / uGridW;
+  if (gz >= uGridH) { cull(); return; }
+  vec2 cellF = uOriginCell + vec2(float(id - gz * uGridW), float(gz));
 
-  float hid = float(id) * 1.0 + uSeed;
-  vec4 h0 = hash41(hid);
-  vec2 base = uOrigin + (cellIdx + 0.5 + (h0.xy - 0.5) * 0.94) * uCell;
+  vec4 h0 = hash42(cellF + uSeed);
+  vec2 base = (cellF + 0.5 + (h0.xy - 0.5) * 0.94) * uCell;
 
   vec2 toCam = base - uCam.xz;
   float dist = length(toCam);
@@ -77,7 +80,7 @@ void main(){
              * (1.0 - smoothstep(uFadeOut.x, uFadeOut.y, dist));
   if (fade < 0.02) { cull(); return; }
 
-  vec4 h1 = hash41(hid * 1.6180339 + 7.31);
+  vec4 h1 = hash42(cellF * 1.6180339 + (uSeed + 7.31));
 
   /* The same mound field the ground is displaced by. Grass grows longer
      on a tussock and thins out in the hollow between them, and coupling
@@ -275,6 +278,9 @@ void main(){
 
 /* ------------------------------------------------------------------ */
 
+/* Never hand a driver more than this many instances in one draw. */
+const INSTANCE_CHUNK = 65536;
+
 class GrassRing {
   constructor(cfg) { Object.assign(this, cfg); }
 }
@@ -334,6 +340,53 @@ class Grass {
   /** Blades actually submitted this frame - the readout shows it. */
   get instanceCount() { return this._count | 0; }
 
+  /**
+   * The lattice covering what can actually be seen, in whole world cells.
+   *
+   * The grid used to be a square centred on the camera, of which the view
+   * frustum only ever covers about a third - the rest was submitted purely
+   * to be thrown away by the cull in the vertex shader, still paying a
+   * vertex invocation per blade per vertex. Fitting the box to the visible
+   * sector is free and cuts what is submitted by roughly two thirds.
+   *
+   * Returned in cell coordinates, so a blade's identity comes from where
+   * it sits in the world rather than from where it happened to land in
+   * this frame's grid, and it does not shuffle as you turn.
+   */
+  visibleBox(env, r1, cell) {
+    const cx = env.camPos[0], cz = env.camPos[2];
+    /* the same half-angle the vertex shader culls to, plus a margin */
+    const half = Math.min(Math.acos(clamp(env.cullDot, -1, 1)) + 0.12, Math.PI);
+    const yaw = Math.atan2(env.fwdXZ[0], -env.fwdXZ[1]);
+
+    /* blades inside the near guard are never frustum-culled, because when
+       you look straight down they are all around you */
+    const near = Math.min(r1, 4.5);
+    let minX = cx - near, maxX = cx + near;
+    let minZ = cz - near, maxZ = cz + near;
+
+    if (half < Math.PI - 1e-3) {
+      const N = 14;
+      for (let i = 0; i <= N; i++) {
+        const a = yaw - half + (2 * half) * (i / N);
+        const x = cx + Math.sin(a) * r1, z = cz - Math.cos(a) * r1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+      }
+    } else {
+      minX = cx - r1; maxX = cx + r1; minZ = cz - r1; maxZ = cz + r1;
+    }
+
+    const x0 = Math.floor(minX / cell), z0 = Math.floor(minZ / cell);
+    return {
+      x0, z0,
+      w: Math.max(1, Math.ceil(maxX / cell) - x0 + 1),
+      h: Math.max(1, Math.ceil(maxZ / cell) - z0 + 1)
+    };
+  }
+
   draw(env) {
     const gl = this.glw.gl, p = this.prog;
     gl.useProgram(p);
@@ -372,17 +425,45 @@ class Grass {
        hardware that needs the setting. Quantised so that a small change
        in the auto-quality scaler does not reshuffle the whole field. */
     const dens = Math.max(0.06, Math.round(env.density * 10) / 10);
+
+    /* Plan every ring first, then hold the whole frame to a budget.
+       A tile-based GPU bins primitives into a fixed buffer before it
+       shades anything, and when that buffer overflows the driver drops
+       geometry rather than reporting an error - the frame rate stays at
+       60 and the grass simply is not there. Nothing in WebGL exposes
+       where that limit is, so the only safe move is not to approach it,
+       and to make the ceiling adjustable so it can be found. */
+    const plan = [];
+    let want = 0;
     for (const r of this.rings) {
       if (r.r0 > env.grassRange) continue;
       const r1 = Math.min(r.r1, env.grassRange);
       const cell = r.cell / Math.sqrt(dens);
-      let gridN = Math.min(1100, Math.ceil((r1 * 2) / cell));
-      if (gridN % 2) gridN++;
+      const box = this.visibleBox(env, r1, cell);
+      plan.push({ r, r1, cell, box, coarsen: 1 });
+      want += box.w * box.h;
+    }
+    if (want > env.bladeBudget) {
+      /* coarsen every ring together so the field thins evenly */
+      const k = Math.sqrt(want / env.bladeBudget);
+      for (const q of plan) {
+        q.cell *= k;
+        q.coarsen = k;
+        q.box = this.visibleBox(env, q.r1, q.cell);
+      }
+    }
+
+    for (const q of plan) {
+      const r = q.r, r1 = q.r1, cell = q.cell, box = q.box;
       /* fewer blades, each a little broader, so thinning the field costs
          coverage far more slowly than it costs vertices */
-      const widen = clamp(1 + 0.4 * (1 / Math.sqrt(dens) - 1), 1, 2.1);
+      const widen = clamp(1 + 0.4 * (1 / Math.sqrt(dens) - 1), 1, 2.1)
+                  * clamp(1 + 0.55 * (q.coarsen - 1), 1, 2.6);
+
       gl.uniform1f(p.u.uCell, cell);
-      gl.uniform1i(p.u.uGridN, gridN);
+      gl.uniform2f(p.u.uOriginCell, box.x0, box.z0);
+      gl.uniform1i(p.u.uGridW, box.w);
+      gl.uniform1i(p.u.uGridH, box.h);
       gl.uniform2f(p.u.uRange, r.r0, r1);
       gl.uniform2f(p.u.uFadeIn, r.fadeIn[0], r.fadeIn[1]);
       gl.uniform2f(p.u.uFadeOut,
@@ -392,15 +473,20 @@ class Grass {
       gl.uniform1f(p.u.uWidthMul, r.width * widen);
       gl.uniform1f(p.u.uViewFace, r.viewFace);
       gl.uniform1f(p.u.uCurve, r.curve);
-      /* re-centre the lattice on the camera, snapped to a whole cell so
-         blades stay put in the world instead of crawling with you */
-      gl.uniform2f(p.u.uOrigin,
-        Math.round(env.camPos[0] / cell) * cell,
-        Math.round(env.camPos[2] / cell) * cell);
 
-      const n = gridN * gridN;
+      /* Chunked. A single draw of a million instances is more than some
+         drivers will take in one piece: a tile-based GPU can overflow the
+         buffer it bins primitives into and silently drop geometry, and
+         ANGLE splits oversized instanced draws itself, which has not
+         always got gl_InstanceID right across the split. Splitting it
+         here, with an explicit base, keeps it predictable. */
+      const n = box.w * box.h;
       gl.bindVertexArray(r.mesh.vao);
-      gl.drawElementsInstanced(gl.TRIANGLES, r.mesh.count, gl.UNSIGNED_SHORT, 0, n);
+      for (let base = 0; base < n; base += INSTANCE_CHUNK) {
+        gl.uniform1i(p.u.uInstanceBase, base);
+        gl.drawElementsInstanced(gl.TRIANGLES, r.mesh.count, gl.UNSIGNED_SHORT, 0,
+                                 Math.min(INSTANCE_CHUNK, n - base));
+      }
       total += n;
     }
     gl.bindVertexArray(null);
