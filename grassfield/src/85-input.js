@@ -9,6 +9,13 @@ class Input {
     this.keys = Object.create(null);
     this.dx = 0; this.dy = 0;
     this.locked = false;
+    /* Pointer lock is not granted inside a sandboxed frame, which is how
+       the hosted page is served - so mouse look silently did nothing
+       there. Drag-look is the fallback that works everywhere. */
+    this.lockAvailable = true;
+    this.dragging = false;
+    this.lastX = 0;
+    this.lastY = 0;
     this.sensitivity = 1.0;
     this.invertY = false;
     this.touch = { active: false, id: -1, ox: 0, oy: 0, x: 0, y: 0 };
@@ -35,13 +42,35 @@ class Input {
     });
 
     addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
-      /* Chrome can deliver one enormous movement value on lock; clamping
-         stops the view snapping halfway round the field. */
-      const mx = Math.max(-260, Math.min(260, e.movementX || 0));
-      const my = Math.max(-260, Math.min(260, e.movementY || 0));
-      this.dx += mx * 0.0022 * this.sensitivity;
-      this.dy += my * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+      if (this.locked) {
+        /* Chrome can deliver one enormous movement value on lock; clamping
+           stops the view snapping halfway round the field. */
+        const mx = Math.max(-260, Math.min(260, e.movementX || 0));
+        const my = Math.max(-260, Math.min(260, e.movementY || 0));
+        this.dx += mx * 0.0022 * this.sensitivity;
+        this.dy += my * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+        return;
+      }
+      if (!this.dragging) return;
+      const dx = e.clientX - this.lastX, dy = e.clientY - this.lastY;
+      this.lastX = e.clientX; this.lastY = e.clientY;
+      this.dx += dx * 0.0034 * this.sensitivity;
+      this.dy += dy * 0.0034 * this.sensitivity * (this.invertY ? -1 : 1);
+    });
+
+    c.addEventListener('mousedown', (e) => {
+      if (this.locked || e.button !== 0) return;
+      this.dragging = true;
+      this.lastX = e.clientX; this.lastY = e.clientY;
+      e.preventDefault();
+    });
+    addEventListener('mouseup', () => { this.dragging = false; });
+    addEventListener('blur', () => { this.dragging = false; });
+    c.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    document.addEventListener('pointerlockerror', () => {
+      this.lockAvailable = false;
+      if (this.onLockUnavailable) this.onLockUnavailable();
     });
 
     /* ---- touch: left half drives, right half looks ---- */
@@ -107,6 +136,7 @@ class Input {
   }
 
   requestLock() {
+    if (!this.canvas.requestPointerLock) { this.noteLockUnavailable(); return; }
     /* unadjustedMovement gives raw mouse deltas where it is supported;
        older browsers reject the options object outright, so both the
        throw and the rejected promise have to fall back */
@@ -116,6 +146,19 @@ class Input {
     } catch (e) {
       try { this.canvas.requestPointerLock(); } catch (e2) {}
     }
+    /* A sandboxed frame does not always fire pointerlockerror - it just
+       never locks. If we are not locked shortly after asking, assume we
+       never will be and switch to dragging. */
+    clearTimeout(this._lockTimer);
+    this._lockTimer = setTimeout(() => {
+      if (!this.locked) this.noteLockUnavailable();
+    }, 600);
+  }
+
+  noteLockUnavailable() {
+    if (!this.lockAvailable) return;
+    this.lockAvailable = false;
+    if (this.onLockUnavailable) this.onLockUnavailable();
   }
 
   /** Movement in camera space: x right, y forward, both -1..1. */

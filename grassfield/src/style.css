@@ -12,6 +12,9 @@ html,body{margin:0;height:100%;background:#05070a;overflow:hidden;
   -webkit-font-smoothing:antialiased;overscroll-behavior:none;touch-action:none}
 canvas#view{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:default}
 body.playing canvas#view{cursor:none}
+/* pointer lock refused: the cursor has to stay, and grabbing it is the gesture */
+body.dragLook canvas#view{cursor:grab}
+body.dragLook canvas#view:active{cursor:grabbing}
 
 /* a CSS vignette that survives even if post-processing is switched off */
 #vignetteFallback{position:fixed;inset:0;pointer-events:none;z-index:1;

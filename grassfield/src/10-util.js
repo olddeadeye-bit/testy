@@ -149,6 +149,36 @@ function makeFbm(seed, base, octaves, gain) {
   return makeFbm2(seed, base, base, octaves, gain);
 }
 
+/* ------------------------------------------------------------- wind --
+   Real wind is not a sine wave. It sits mostly below its own peaks: long
+   lulls, then a gust that builds and dies over a few seconds, with the
+   direction veering as it does. That shape is what layered 1/f noise in
+   TIME gives you, so the field gets one of those rather than a clock. */
+
+function makeWindNoise(seed) {
+  const N = 1024;
+  const rnd = mulberry32(seed);
+  const g = new Float32Array(N);
+  for (let i = 0; i < N; i++) g[i] = rnd();
+  const at = (x) => {
+    const i = Math.floor(x);
+    let f = x - i;
+    f = f * f * (3 - 2 * f);
+    const a = g[((i % N) + N) % N], b = g[((((i + 1) % N)) + N) % N];
+    return a + (b - a) * f;
+  };
+  return (t, octaves) => {
+    let sum = 0, amp = 1, tot = 0, fr = 1;
+    for (let o = 0; o < (octaves || 4); o++) {
+      sum += amp * at(t * fr);
+      tot += amp;
+      amp *= 0.55;
+      fr *= 2.13;
+    }
+    return sum / tot;
+  };
+}
+
 /* --------------------------------------------------------- settings -- */
 const SETTINGS_KEY = 'grassfield.settings.v1';
 

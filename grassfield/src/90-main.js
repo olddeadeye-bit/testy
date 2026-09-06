@@ -19,12 +19,21 @@ const DEFAULTS = {
   grassRange: 130,
   bladeHeight: 1.45,
   wind: 0.70,
+  /* how far the strength swings between lull and gust */
+  gustiness: 0.75,
+  /* how quickly gusts arrive and pass */
+  gustRate: 1.0,
+  /* how much the direction wanders as it gusts */
+  windShift: 0.45,
   fov: 68,
   exposure: 1.00,
   bloom: 0.09,
   grain: 0.028,
   vignette: 0.42,
   saturation: 1.04,
+  /* how far around you the grass is parted, and how hard */
+  partRadius: 1.05,
+  partStrength: 1.15,
   groundLift: 5.9,
   sheen: 1.45,
   chroma: 0.0035,
@@ -163,6 +172,8 @@ class World {
     this.grounded = true;
     this.vy = 0;
     this._playerXZ = new Float32Array(2);
+    this._playerHeading = new Float32Array(2);
+    this._playerSpeedN = 0;
     this.roll = 0;
 
     this.time = 0;
@@ -170,6 +181,11 @@ class World {
     this.windAngle = 0.7;
     this.windDir = new Float32Array([Math.cos(0.7), Math.sin(0.7)]);
     this.gust = 0.5;
+    this.windClock = 0;
+    this.gustNow = 1;
+    this.windStrength = 0;
+    this.windNoise = makeWindNoise(90210);
+    this.veerNoise = makeWindNoise(31415);
 
     /* ---------------- matrices -------------------------------------- */
     this.proj = M4.ident();
@@ -425,13 +441,15 @@ class World {
       get cullDot() { return w.cullDot; },
       get windDir() { return w.windDir; },
       get windTime() { return w.windTime; },
-      get windStrength() { return w.settings.wind; },
+      get windStrength() { return clamp(w.windStrength, 0, 2.6); },
       /* Prairie grass is not a lawn: it lies over. Roughly 30 degrees
          at rest, more as the wind gets up. */
-      get baseBend() { return 0.50 + w.settings.wind * 0.16; },
+      get baseBend() { return 0.50 + clamp(w.windStrength, 0, 2.0) * 0.16; },
       get playerXZ() { return w._playerXZ; },
-      get partRadius() { return 0.85; },
-      get partStrength() { return 0.9; },
+      get playerHeading() { return w._playerHeading; },
+      get playerSpeed() { return w._playerSpeedN; },
+      get partRadius() { return w.settings.partRadius; },
+      get partStrength() { return w.settings.partStrength; },
       get density() { return w._density; },
       get grassRange() { return w._range; },
       get bladeBudget() { return Math.max(20000, w.settings.maxBlades * 1000 * w.autoScale); },
@@ -588,15 +606,29 @@ class World {
   step(dt, input, audio) {
     const s = this.settings;
     this.time += dt;
-    /* The wind veers slowly, the way real wind does - but everything here
-       scales with the wind setting, so that turning it to zero leaves the
-       field genuinely still. A veering direction with no wind behind it
-       still rotates every blade, which is not what "0" should mean. */
-    const w = Math.min(1, s.wind * 1.4);
-    this.windAngle += dt * 0.035 * w * Math.sin(this.time * 0.043 + 1.7);
+
+    /* ---- wind ------------------------------------------------------
+       Strength is a mean with gusts on top, not a constant. The noise is
+       raised to a power that grows with gustiness, which is what puts the
+       field in a lull most of the time and makes the gusts brief - the
+       thing that reads as weather rather than as animation. Everything
+       still scales with the Wind setting, so 0 is genuinely still. */
+    const live = Math.min(1, s.wind * 1.4);
+    this.windClock += dt * (0.09 + 0.30 * s.gustRate) * live;
+
+    const n = clamp(this.windNoise(this.windClock, 4), 0, 1);
+    const shaped = Math.pow(n, 1.0 + 1.4 * s.gustiness);
+    this.gustNow = lerp(1 - 0.70 * s.gustiness, 1 + 1.60 * s.gustiness, shaped);
+    this.windStrength = Math.max(0, s.wind * this.gustNow);
+
+    /* the direction veers with the gusts, and harder in a squall */
+    const veer = this.veerNoise(this.windClock * 0.41 + 17.0, 3) - 0.5;
+    this.windAngle += dt * veer * (0.06 + 1.10 * s.windShift) * live;
     this.windDir[0] = Math.cos(this.windAngle);
     this.windDir[1] = Math.sin(this.windAngle);
-    this.windTime += dt * 1.15 * w;
+
+    /* the waves travel faster in a gust, which is most of the "flow" */
+    this.windTime += dt * 1.15 * live * (0.45 + 0.75 * this.gustNow);
 
     /* ---- look ---- */
     const [ldx, ldy] = input.takeLook();
@@ -660,8 +692,15 @@ class World {
 
     this._playerXZ[0] = this.pos[0];
     this._playerXZ[1] = this.pos[2];
-    this.gust = this.gustAt(this.pos[0], this.pos[2]);
-    audio.update(this.gust, speed, s.wind);
+    /* heading and speed drive the wake the grass opens around you */
+    const moveSpeed = Math.hypot(this.vel[0], this.vel[2]);
+    this._playerSpeedN = clamp(moveSpeed / 3.5, 0, 1.2);
+    if (moveSpeed > 0.05) {
+      this._playerHeading[0] = approach(this._playerHeading[0], this.vel[0] / moveSpeed, 9.0, dt);
+      this._playerHeading[1] = approach(this._playerHeading[1], this.vel[2] / moveSpeed, 9.0, dt);
+    }
+    this.gust = this.gustAt(this.pos[0], this.pos[2]) * this.gustNow;
+    audio.update(this.gust, speed, this.windStrength);
 
     /* ---- camera basis ---- */
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
@@ -701,7 +740,8 @@ class World {
   render(dt) {
     const gl = this.glw.gl, s = this.settings;
 
-    this.trample.update(this.pos[0], this.pos[2], dt, 0.55, Math.max(s.trail, 0.5));
+    this.trample.update(this.pos[0], this.pos[2], dt,
+                        0.48 + 0.42 * this._playerSpeedN, Math.max(s.trail, 0.5));
 
     this.glw.bindTarget(this.scene, true);
     gl.clearColor(0, 0, 0, 1);

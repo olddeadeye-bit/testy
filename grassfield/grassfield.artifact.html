@@ -14,6 +14,9 @@ html,body{margin:0;height:100%;background:#05070a;overflow:hidden;
   -webkit-font-smoothing:antialiased;overscroll-behavior:none;touch-action:none}
 canvas#view{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:default}
 body.playing canvas#view{cursor:none}
+/* pointer lock refused: the cursor has to stay, and grabbing it is the gesture */
+body.dragLook canvas#view{cursor:grab}
+body.dragLook canvas#view:active{cursor:grabbing}
 
 /* a CSS vignette that survives even if post-processing is switched off */
 #vignetteFallback{position:fixed;inset:0;pointer-events:none;z-index:1;
@@ -330,6 +333,36 @@ function makeFbm2(seed, bx, by, octaves, gain) {
 /** Isotropic case of makeFbm2. */
 function makeFbm(seed, base, octaves, gain) {
   return makeFbm2(seed, base, base, octaves, gain);
+}
+
+/* ------------------------------------------------------------- wind --
+   Real wind is not a sine wave. It sits mostly below its own peaks: long
+   lulls, then a gust that builds and dies over a few seconds, with the
+   direction veering as it does. That shape is what layered 1/f noise in
+   TIME gives you, so the field gets one of those rather than a clock. */
+
+function makeWindNoise(seed) {
+  const N = 1024;
+  const rnd = mulberry32(seed);
+  const g = new Float32Array(N);
+  for (let i = 0; i < N; i++) g[i] = rnd();
+  const at = (x) => {
+    const i = Math.floor(x);
+    let f = x - i;
+    f = f * f * (3 - 2 * f);
+    const a = g[((i % N) + N) % N], b = g[((((i + 1) % N)) + N) % N];
+    return a + (b - a) * f;
+  };
+  return (t, octaves) => {
+    let sum = 0, amp = 1, tot = 0, fr = 1;
+    for (let o = 0; o < (octaves || 4); o++) {
+      sum += amp * at(t * fr);
+      tot += amp;
+      amp *= 0.55;
+      fr *= 2.13;
+    }
+    return sum / tot;
+  };
 }
 
 /* --------------------------------------------------------- settings -- */
@@ -1203,6 +1236,8 @@ uniform float uWindTime;
 uniform float uBaseBend;
 
 uniform vec2  uPlayerXZ;
+uniform vec2  uPlayerVel;    /* unit heading, zero when standing still */
+uniform float uPlayerSpeed;  /* 0..1, normalised against a run */
 uniform float uPartRadius;
 uniform float uPartStrength;
 
@@ -1305,12 +1340,23 @@ void main(){
              + gustAmp * (0.62 + 0.34 * (g2 - 0.5) * 2.0 + 0.24 * sway);
   bend *= 0.72 + 0.48 * h1.x;
 
-  /* ---- the player pushes through --------------------------------- */
+  /* ---- the player pushes through ----------------------------------
+     Blades are shoved away radially AND carried along the direction of
+     travel, so moving through the field opens a wake in front of you
+     rather than a symmetrical bubble around you. The reach and the force
+     both grow with speed: walking parts the grass, running flattens it. */
   vec2 toP = base - uPlayerXZ;
   float dp = length(toP) + 1e-4;
-  float push = smoothstep(uPartRadius, uPartRadius * 0.2, dp) * uPartStrength;
-  lean2 = normalize(lean2 + (toP / dp) * push * 2.4);
-  bend += push * 0.85;
+  vec2 outward = toP / dp;
+  float reach = uPartRadius * (1.0 + 0.85 * uPlayerSpeed);
+  /* elongate the affected patch along the direction of travel */
+  float along = dot(outward, uPlayerVel);
+  float shaped = dp * (1.0 - 0.30 * uPlayerSpeed * along);
+  float push = smoothstep(reach, reach * 0.12, shaped)
+             * uPartStrength * (0.55 + 0.75 * uPlayerSpeed);
+  vec2 shove = normalize(outward + uPlayerVel * (0.85 * uPlayerSpeed) + vec2(1e-5, 0.0));
+  lean2 = normalize(lean2 + shove * push * 3.4);
+  bend += push * 1.15;
 
   /* ---- and leaves a trail ----------------------------------------- */
   float tr = trampleAt(base);
@@ -1565,6 +1611,8 @@ class Grass {
     gl.uniform1f(p.u.uWindTime, env.windTime);
     gl.uniform1f(p.u.uBaseBend, env.baseBend);
     gl.uniform2fv(p.u.uPlayerXZ, env.playerXZ);
+    gl.uniform2fv(p.u.uPlayerVel, env.playerHeading);
+    gl.uniform1f(p.u.uPlayerSpeed, env.playerSpeed);
     gl.uniform1f(p.u.uPartRadius, env.partRadius);
     gl.uniform1f(p.u.uPartStrength, env.partStrength);
     gl.uniform3fv(p.u.uGrassDark, env.grassDark);
@@ -2211,6 +2259,13 @@ class Input {
     this.keys = Object.create(null);
     this.dx = 0; this.dy = 0;
     this.locked = false;
+    /* Pointer lock is not granted inside a sandboxed frame, which is how
+       the hosted page is served - so mouse look silently did nothing
+       there. Drag-look is the fallback that works everywhere. */
+    this.lockAvailable = true;
+    this.dragging = false;
+    this.lastX = 0;
+    this.lastY = 0;
     this.sensitivity = 1.0;
     this.invertY = false;
     this.touch = { active: false, id: -1, ox: 0, oy: 0, x: 0, y: 0 };
@@ -2237,13 +2292,35 @@ class Input {
     });
 
     addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
-      /* Chrome can deliver one enormous movement value on lock; clamping
-         stops the view snapping halfway round the field. */
-      const mx = Math.max(-260, Math.min(260, e.movementX || 0));
-      const my = Math.max(-260, Math.min(260, e.movementY || 0));
-      this.dx += mx * 0.0022 * this.sensitivity;
-      this.dy += my * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+      if (this.locked) {
+        /* Chrome can deliver one enormous movement value on lock; clamping
+           stops the view snapping halfway round the field. */
+        const mx = Math.max(-260, Math.min(260, e.movementX || 0));
+        const my = Math.max(-260, Math.min(260, e.movementY || 0));
+        this.dx += mx * 0.0022 * this.sensitivity;
+        this.dy += my * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+        return;
+      }
+      if (!this.dragging) return;
+      const dx = e.clientX - this.lastX, dy = e.clientY - this.lastY;
+      this.lastX = e.clientX; this.lastY = e.clientY;
+      this.dx += dx * 0.0034 * this.sensitivity;
+      this.dy += dy * 0.0034 * this.sensitivity * (this.invertY ? -1 : 1);
+    });
+
+    c.addEventListener('mousedown', (e) => {
+      if (this.locked || e.button !== 0) return;
+      this.dragging = true;
+      this.lastX = e.clientX; this.lastY = e.clientY;
+      e.preventDefault();
+    });
+    addEventListener('mouseup', () => { this.dragging = false; });
+    addEventListener('blur', () => { this.dragging = false; });
+    c.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    document.addEventListener('pointerlockerror', () => {
+      this.lockAvailable = false;
+      if (this.onLockUnavailable) this.onLockUnavailable();
     });
 
     /* ---- touch: left half drives, right half looks ---- */
@@ -2309,6 +2386,7 @@ class Input {
   }
 
   requestLock() {
+    if (!this.canvas.requestPointerLock) { this.noteLockUnavailable(); return; }
     /* unadjustedMovement gives raw mouse deltas where it is supported;
        older browsers reject the options object outright, so both the
        throw and the rejected promise have to fall back */
@@ -2318,6 +2396,19 @@ class Input {
     } catch (e) {
       try { this.canvas.requestPointerLock(); } catch (e2) {}
     }
+    /* A sandboxed frame does not always fire pointerlockerror - it just
+       never locks. If we are not locked shortly after asking, assume we
+       never will be and switch to dragging. */
+    clearTimeout(this._lockTimer);
+    this._lockTimer = setTimeout(() => {
+      if (!this.locked) this.noteLockUnavailable();
+    }, 600);
+  }
+
+  noteLockUnavailable() {
+    if (!this.lockAvailable) return;
+    this.lockAvailable = false;
+    if (this.onLockUnavailable) this.onLockUnavailable();
   }
 
   /** Movement in camera space: x right, y forward, both -1..1. */
@@ -2536,12 +2627,21 @@ const DEFAULTS = {
   grassRange: 130,
   bladeHeight: 1.45,
   wind: 0.70,
+  /* how far the strength swings between lull and gust */
+  gustiness: 0.75,
+  /* how quickly gusts arrive and pass */
+  gustRate: 1.0,
+  /* how much the direction wanders as it gusts */
+  windShift: 0.45,
   fov: 68,
   exposure: 1.00,
   bloom: 0.09,
   grain: 0.028,
   vignette: 0.42,
   saturation: 1.04,
+  /* how far around you the grass is parted, and how hard */
+  partRadius: 1.05,
+  partStrength: 1.15,
   groundLift: 5.9,
   sheen: 1.45,
   chroma: 0.0035,
@@ -2680,6 +2780,8 @@ class World {
     this.grounded = true;
     this.vy = 0;
     this._playerXZ = new Float32Array(2);
+    this._playerHeading = new Float32Array(2);
+    this._playerSpeedN = 0;
     this.roll = 0;
 
     this.time = 0;
@@ -2687,6 +2789,11 @@ class World {
     this.windAngle = 0.7;
     this.windDir = new Float32Array([Math.cos(0.7), Math.sin(0.7)]);
     this.gust = 0.5;
+    this.windClock = 0;
+    this.gustNow = 1;
+    this.windStrength = 0;
+    this.windNoise = makeWindNoise(90210);
+    this.veerNoise = makeWindNoise(31415);
 
     /* ---------------- matrices -------------------------------------- */
     this.proj = M4.ident();
@@ -2942,13 +3049,15 @@ class World {
       get cullDot() { return w.cullDot; },
       get windDir() { return w.windDir; },
       get windTime() { return w.windTime; },
-      get windStrength() { return w.settings.wind; },
+      get windStrength() { return clamp(w.windStrength, 0, 2.6); },
       /* Prairie grass is not a lawn: it lies over. Roughly 30 degrees
          at rest, more as the wind gets up. */
-      get baseBend() { return 0.50 + w.settings.wind * 0.16; },
+      get baseBend() { return 0.50 + clamp(w.windStrength, 0, 2.0) * 0.16; },
       get playerXZ() { return w._playerXZ; },
-      get partRadius() { return 0.85; },
-      get partStrength() { return 0.9; },
+      get playerHeading() { return w._playerHeading; },
+      get playerSpeed() { return w._playerSpeedN; },
+      get partRadius() { return w.settings.partRadius; },
+      get partStrength() { return w.settings.partStrength; },
       get density() { return w._density; },
       get grassRange() { return w._range; },
       get bladeBudget() { return Math.max(20000, w.settings.maxBlades * 1000 * w.autoScale); },
@@ -3105,15 +3214,29 @@ class World {
   step(dt, input, audio) {
     const s = this.settings;
     this.time += dt;
-    /* The wind veers slowly, the way real wind does - but everything here
-       scales with the wind setting, so that turning it to zero leaves the
-       field genuinely still. A veering direction with no wind behind it
-       still rotates every blade, which is not what "0" should mean. */
-    const w = Math.min(1, s.wind * 1.4);
-    this.windAngle += dt * 0.035 * w * Math.sin(this.time * 0.043 + 1.7);
+
+    /* ---- wind ------------------------------------------------------
+       Strength is a mean with gusts on top, not a constant. The noise is
+       raised to a power that grows with gustiness, which is what puts the
+       field in a lull most of the time and makes the gusts brief - the
+       thing that reads as weather rather than as animation. Everything
+       still scales with the Wind setting, so 0 is genuinely still. */
+    const live = Math.min(1, s.wind * 1.4);
+    this.windClock += dt * (0.09 + 0.30 * s.gustRate) * live;
+
+    const n = clamp(this.windNoise(this.windClock, 4), 0, 1);
+    const shaped = Math.pow(n, 1.0 + 1.4 * s.gustiness);
+    this.gustNow = lerp(1 - 0.70 * s.gustiness, 1 + 1.60 * s.gustiness, shaped);
+    this.windStrength = Math.max(0, s.wind * this.gustNow);
+
+    /* the direction veers with the gusts, and harder in a squall */
+    const veer = this.veerNoise(this.windClock * 0.41 + 17.0, 3) - 0.5;
+    this.windAngle += dt * veer * (0.06 + 1.10 * s.windShift) * live;
     this.windDir[0] = Math.cos(this.windAngle);
     this.windDir[1] = Math.sin(this.windAngle);
-    this.windTime += dt * 1.15 * w;
+
+    /* the waves travel faster in a gust, which is most of the "flow" */
+    this.windTime += dt * 1.15 * live * (0.45 + 0.75 * this.gustNow);
 
     /* ---- look ---- */
     const [ldx, ldy] = input.takeLook();
@@ -3177,8 +3300,15 @@ class World {
 
     this._playerXZ[0] = this.pos[0];
     this._playerXZ[1] = this.pos[2];
-    this.gust = this.gustAt(this.pos[0], this.pos[2]);
-    audio.update(this.gust, speed, s.wind);
+    /* heading and speed drive the wake the grass opens around you */
+    const moveSpeed = Math.hypot(this.vel[0], this.vel[2]);
+    this._playerSpeedN = clamp(moveSpeed / 3.5, 0, 1.2);
+    if (moveSpeed > 0.05) {
+      this._playerHeading[0] = approach(this._playerHeading[0], this.vel[0] / moveSpeed, 9.0, dt);
+      this._playerHeading[1] = approach(this._playerHeading[1], this.vel[2] / moveSpeed, 9.0, dt);
+    }
+    this.gust = this.gustAt(this.pos[0], this.pos[2]) * this.gustNow;
+    audio.update(this.gust, speed, this.windStrength);
 
     /* ---- camera basis ---- */
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
@@ -3218,7 +3348,8 @@ class World {
   render(dt) {
     const gl = this.glw.gl, s = this.settings;
 
-    this.trample.update(this.pos[0], this.pos[2], dt, 0.55, Math.max(s.trail, 0.5));
+    this.trample.update(this.pos[0], this.pos[2], dt,
+                        0.48 + 0.42 * this._playerSpeedN, Math.max(s.trail, 0.5));
 
     this.glw.bindTarget(this.scene, true);
     gl.clearColor(0, 0, 0, 1);
@@ -3283,6 +3414,12 @@ const CONTROLS = [
 
   { grp: 'Field' },
   { k: 'wind',        label: 'Wind',               min: 0,    max: 1.6,  step: 0.01 },
+  { k: 'gustiness',   label: 'Gustiness',          min: 0,    max: 1.4,  step: 0.01,
+    note: 'How far the strength swings between lull and gust. At 0 it is a steady breeze; turned up, the field sits mostly calm and then a gust rolls through it and dies away.' },
+  { k: 'gustRate',    label: 'Gust speed',         min: 0.15, max: 3.0,  step: 0.05 },
+  { k: 'windShift',   label: 'Direction drift',    min: 0,    max: 1.5,  step: 0.01 },
+  { k: 'partRadius',  label: 'Grass parting',      min: 0.3,  max: 2.5,  step: 0.05, unit: ' m' },
+  { k: 'partStrength',label: 'Parting force',      min: 0,    max: 2.5,  step: 0.05 },
   { k: 'groundLift',  label: 'Ground brightness',  min: 0.5,  max: 7.0,  step: 0.05 },
   { k: 'sheen',       label: 'Leaf sheen',         min: 0,    max: 5.0,  step: 0.05 },
   { k: 'density',     label: 'Grass density',      min: 0.2,  max: 2.0,  step: 0.05 },
@@ -3447,8 +3584,8 @@ function boot() {
     $('gateKeys').hidden = isTouch;
     note.innerHTML = isTouch
       ? 'Drag on the left to walk, on the right to look.'
-      : 'The sky is the original photograph on a dome, so it stays exact however far ' +
-        'you walk. The ground is rebuilt as real grass, because a photograph has no depth.';
+      : 'Mouse to look, WASD to walk. If the cursor stays visible, this page is not ' +
+        'allowed to capture it \u2014 hold the mouse button down to look around instead.';
 
     const enter = () => {
       gate.classList.add('gone');
@@ -3465,6 +3602,17 @@ function boot() {
     input.onLockChange = (locked) => {
       if (!locked) document.body.classList.remove('playing');
       else document.body.classList.add('playing');
+    };
+
+    /* Pointer lock is refused inside a sandboxed frame, which is how the
+       hosted page is served, and it fails by simply never locking rather
+       than by raising an error. Fall back to dragging and say so, rather
+       than leaving the mouse apparently dead. */
+    input.onLockUnavailable = () => {
+      document.body.classList.add('dragLook');
+      document.body.classList.remove('playing');
+      $('hint').textContent = 'hold the mouse button to look \u00b7 O settings \u00b7 H hide';
+      toast('hold the mouse button to look around');
     };
 
     input.onKey = (e) => {
@@ -3542,7 +3690,7 @@ function boot() {
       Math.round(world.fps) + ' fps · ' + ms.toFixed(1) + ' ms';
     const dirDeg = ((world.windAngle * 180 / Math.PI) % 360 + 360) % 360;
     $('rWind').textContent =
-      'wind ' + Math.round(world.gust * world.settings.wind * 100) + '% · ' +
+      'wind ' + Math.round(world.windStrength * 100) + '% · ' +
       Math.round(dirDeg) + '° · ' +
       (world.grass.instanceCount / 1000).toFixed(0) + 'k blades';
     $('rPos').textContent =

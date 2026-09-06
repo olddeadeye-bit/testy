@@ -41,6 +41,8 @@ uniform float uWindTime;
 uniform float uBaseBend;
 
 uniform vec2  uPlayerXZ;
+uniform vec2  uPlayerVel;    /* unit heading, zero when standing still */
+uniform float uPlayerSpeed;  /* 0..1, normalised against a run */
 uniform float uPartRadius;
 uniform float uPartStrength;
 
@@ -143,12 +145,23 @@ void main(){
              + gustAmp * (0.62 + 0.34 * (g2 - 0.5) * 2.0 + 0.24 * sway);
   bend *= 0.72 + 0.48 * h1.x;
 
-  /* ---- the player pushes through --------------------------------- */
+  /* ---- the player pushes through ----------------------------------
+     Blades are shoved away radially AND carried along the direction of
+     travel, so moving through the field opens a wake in front of you
+     rather than a symmetrical bubble around you. The reach and the force
+     both grow with speed: walking parts the grass, running flattens it. */
   vec2 toP = base - uPlayerXZ;
   float dp = length(toP) + 1e-4;
-  float push = smoothstep(uPartRadius, uPartRadius * 0.2, dp) * uPartStrength;
-  lean2 = normalize(lean2 + (toP / dp) * push * 2.4);
-  bend += push * 0.85;
+  vec2 outward = toP / dp;
+  float reach = uPartRadius * (1.0 + 0.85 * uPlayerSpeed);
+  /* elongate the affected patch along the direction of travel */
+  float along = dot(outward, uPlayerVel);
+  float shaped = dp * (1.0 - 0.30 * uPlayerSpeed * along);
+  float push = smoothstep(reach, reach * 0.12, shaped)
+             * uPartStrength * (0.55 + 0.75 * uPlayerSpeed);
+  vec2 shove = normalize(outward + uPlayerVel * (0.85 * uPlayerSpeed) + vec2(1e-5, 0.0));
+  lean2 = normalize(lean2 + shove * push * 3.4);
+  bend += push * 1.15;
 
   /* ---- and leaves a trail ----------------------------------------- */
   float tr = trampleAt(base);
@@ -403,6 +416,8 @@ class Grass {
     gl.uniform1f(p.u.uWindTime, env.windTime);
     gl.uniform1f(p.u.uBaseBend, env.baseBend);
     gl.uniform2fv(p.u.uPlayerXZ, env.playerXZ);
+    gl.uniform2fv(p.u.uPlayerVel, env.playerHeading);
+    gl.uniform1f(p.u.uPlayerSpeed, env.playerSpeed);
     gl.uniform1f(p.u.uPartRadius, env.partRadius);
     gl.uniform1f(p.u.uPartStrength, env.partStrength);
     gl.uniform3fv(p.u.uGrassDark, env.grassDark);

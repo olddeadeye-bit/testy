@@ -16,6 +16,12 @@ const CONTROLS = [
 
   { grp: 'Field' },
   { k: 'wind',        label: 'Wind',               min: 0,    max: 1.6,  step: 0.01 },
+  { k: 'gustiness',   label: 'Gustiness',          min: 0,    max: 1.4,  step: 0.01,
+    note: 'How far the strength swings between lull and gust. At 0 it is a steady breeze; turned up, the field sits mostly calm and then a gust rolls through it and dies away.' },
+  { k: 'gustRate',    label: 'Gust speed',         min: 0.15, max: 3.0,  step: 0.05 },
+  { k: 'windShift',   label: 'Direction drift',    min: 0,    max: 1.5,  step: 0.01 },
+  { k: 'partRadius',  label: 'Grass parting',      min: 0.3,  max: 2.5,  step: 0.05, unit: ' m' },
+  { k: 'partStrength',label: 'Parting force',      min: 0,    max: 2.5,  step: 0.05 },
   { k: 'groundLift',  label: 'Ground brightness',  min: 0.5,  max: 7.0,  step: 0.05 },
   { k: 'sheen',       label: 'Leaf sheen',         min: 0,    max: 5.0,  step: 0.05 },
   { k: 'density',     label: 'Grass density',      min: 0.2,  max: 2.0,  step: 0.05 },
@@ -180,8 +186,8 @@ function boot() {
     $('gateKeys').hidden = isTouch;
     note.innerHTML = isTouch
       ? 'Drag on the left to walk, on the right to look.'
-      : 'The sky is the original photograph on a dome, so it stays exact however far ' +
-        'you walk. The ground is rebuilt as real grass, because a photograph has no depth.';
+      : 'Mouse to look, WASD to walk. If the cursor stays visible, this page is not ' +
+        'allowed to capture it \u2014 hold the mouse button down to look around instead.';
 
     const enter = () => {
       gate.classList.add('gone');
@@ -198,6 +204,17 @@ function boot() {
     input.onLockChange = (locked) => {
       if (!locked) document.body.classList.remove('playing');
       else document.body.classList.add('playing');
+    };
+
+    /* Pointer lock is refused inside a sandboxed frame, which is how the
+       hosted page is served, and it fails by simply never locking rather
+       than by raising an error. Fall back to dragging and say so, rather
+       than leaving the mouse apparently dead. */
+    input.onLockUnavailable = () => {
+      document.body.classList.add('dragLook');
+      document.body.classList.remove('playing');
+      $('hint').textContent = 'hold the mouse button to look \u00b7 O settings \u00b7 H hide';
+      toast('hold the mouse button to look around');
     };
 
     input.onKey = (e) => {
@@ -275,7 +292,7 @@ function boot() {
       Math.round(world.fps) + ' fps · ' + ms.toFixed(1) + ' ms';
     const dirDeg = ((world.windAngle * 180 / Math.PI) % 360 + 360) % 360;
     $('rWind').textContent =
-      'wind ' + Math.round(world.gust * world.settings.wind * 100) + '% · ' +
+      'wind ' + Math.round(world.windStrength * 100) + '% · ' +
       Math.round(dirDeg) + '° · ' +
       (world.grass.instanceCount / 1000).toFixed(0) + 'k blades';
     $('rPos').textContent =
