@@ -92,7 +92,7 @@ void main(){
   float mound = det.r;
 
   /* how tall this blade is relative to the others in its own tuft */
-  float rel   = 0.40 + 0.98 * pow(h1.x, 1.30);
+  float rel   = 0.40 + 0.98 * pow(clamp(h1.x, 0.0, 1.0), 1.30);
   float hgt   = uBladeHeight * rel
                              * (0.60 + 0.86 * clump)
                              * (0.74 + 0.40 * mound)
@@ -160,7 +160,8 @@ void main(){
   float push = smoothstep(reach, reach * 0.12, shaped)
              * uPartStrength * (0.55 + 0.75 * uPlayerSpeed);
   vec2 shove = normalize(outward + uPlayerVel * (0.85 * uPlayerSpeed) + vec2(1e-5, 0.0));
-  lean2 = normalize(lean2 + shove * push * 3.4);
+  /* the shove can cancel the lean exactly; keep it off zero */
+  lean2 = normalize(lean2 + shove * push * 3.4 + vec2(1.0e-6, 0.0));
   bend += push * 1.15;
 
   /* ---- and leaves a trail ----------------------------------------- */
@@ -192,7 +193,11 @@ void main(){
     vec3 toEye = normalize(uCam - (vec3(base.x, gh, base.y) + pos));
     vec3 billboard = cross(tangent, toEye);
     float bl = length(billboard);
-    if (bl > 1e-3) sideAxis = normalize(mix(sideAxis, billboard / bl, uViewFace));
+    if (bl > 1e-3) {
+      vec3 mixed = mix(sideAxis, billboard / bl, uViewFace);
+      float ml = length(mixed);
+      if (ml > 1.0e-4) sideAxis = mixed / ml;
+    }
   }
   vec3 faceN = normalize(cross(sideAxis, tangent));
 
@@ -269,15 +274,19 @@ void main(){
 
   /* light passing through the leaf from behind - the thing that makes a
      field read as grass rather than as green plastic */
-  vec3 trans = shIrradiance(-N) * (1.0 / PI) * uTranslucency * pow(vT, 1.3) * vAO;
+  float t01 = clamp(vT, 0.0, 1.0);      /* an interpolated varying can overshoot */
+  vec3 trans = shIrradiance(-N) * (1.0 / PI) * uTranslucency * pow(t01, 1.3) * vAO;
 
   /* and the airglow band directly behind the blade, catching its edge */
   /* A squared edge term lights an edge-on blade evenly down its whole
      length and the field fills with bright scratches. Cubed, only the
      blades genuinely presenting an edge catch it. */
   vec3 behind = normalize(vec3(D.x, 0.06, D.z));
-  float edge = pow(1.0 - abs(dot(N, V)), 3.0);
-  vec3 rim = skyPlate(behind) * edge * uBackLight * pow(vT, 1.15) * vAO;
+  /* N and V are both unit, but the dot product still rounds to a hair
+     over 1, and pow() of a negative base is NaN - which the bloom chain
+     then smears into a black rectangle. This was the black squares. */
+  float edge = pow(max(1.0 - abs(dot(N, V)), 0.0), 3.0);
+  vec3 rim = skyPlate(behind) * edge * uBackLight * pow(t01, 1.15) * vAO;
 
   vec3 sheen = skySheen(N, V, uSheen) * mix(0.12, 1.0, vAO);
   vec3 spec = uCoreColour * ggx(N, V, uCoreDir, 0.42)

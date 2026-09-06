@@ -12,7 +12,7 @@ in vec2 vUv; out vec4 oColor;
 uniform sampler2D uTex;
 uniform float uThreshold, uKnee, uExposure;
 void main(){
-  vec3 c = texture(uTex, vUv).rgb * uExposure;
+  vec3 c = sanitise(texture(uTex, vUv).rgb) * uExposure;
   float br = max(c.r, max(c.g, c.b));
   float soft = clamp(br - uThreshold + uKnee, 0.0, 2.0 * uKnee);
   soft = soft * soft / (4.0 * uKnee + 1e-4);
@@ -90,7 +90,8 @@ void main(){
     col = texture(uScene, uv).rgb;
   }
 
-  col += texture(uBloom, uv).rgb * uBloomAmt;
+  col = sanitise(col);
+  col += sanitise(texture(uBloom, uv).rgb) * uBloomAmt;
   col *= uExposure;
 
   col = shoulder(col);

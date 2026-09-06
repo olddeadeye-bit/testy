@@ -26,6 +26,16 @@ vec3 linearToSrgb(vec3 c){
 }
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
+/* One non-finite pixel anywhere in the scene is not a lost pixel - it is
+   a lost rectangle. The bloom chain averages it into a texel, each mip
+   level quadruples the area that texel covers, and it comes back as a
+   black block a few hundred pixels across. Comparing a value with itself
+   is the portable NaN test; the clamp catches infinities. */
+vec3 sanitise(vec3 c){
+  c = mix(vec3(0.0), c, vec3(equal(c, c)));
+  return clamp(c, vec3(0.0), vec3(1.0e4));
+}
+
 /* ---- hashing (Dave Hoskins style: no sin, stable across drivers) ---- */
 float hash11(float p){
   p = fract(p * 0.1031);
@@ -79,7 +89,10 @@ uniform float uHighlightBoost;
 uniform float uTime;
 
 vec2 dirToEquirect(vec3 d){
-  return vec2(atan(d.x, -d.z) * 0.15915494 + 0.5,
+  /* looking exactly at the pole makes both arguments zero, and atan(0,0)
+     is undefined - any azimuth will do there, so pick one */
+  float az = (abs(d.x) + abs(d.z) < 1.0e-9) ? 0.0 : atan(d.x, -d.z);
+  return vec2(az * 0.15915494 + 0.5,
               acos(clamp(d.y, -1.0, 1.0)) * 0.31830989);
 }
 
@@ -246,7 +259,12 @@ vec3 skySheen(vec3 n, vec3 v, float amount){
 
 /* ---- specular ---- */
 float ggx(vec3 n, vec3 v, vec3 l, float rough){
-  vec3 h = normalize(v + l);
+  /* v and l cancel when you look straight down the light, and
+     normalize(0) is NaN */
+  vec3 hv = v + l;
+  float hlen = length(hv);
+  if (hlen < 1.0e-5) return 0.0;
+  vec3 h = hv / hlen;
   float a = max(rough * rough, 1e-3);
   float a2 = a * a;
   float ndh = max(dot(n, h), 0.0);
