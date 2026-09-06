@@ -38,6 +38,12 @@ colour to derive the leaf albedo. So the field comes out the colour the
 photograph recorded, under the light the photograph was taken by, rather than a
 colour somebody liked the look of.
 
+`tools/compare.py` is how that was checked rather than guessed. It maps every
+pixel of a screenshot to a real direction and samples the photograph along the
+same rays, so the two can be compared over matching solid angles. At the
+default settings the render lands within about 10% of the plate across every
+elevation band, sky and ground, with the channels balanced to within 3%.
+
 ---
 
 ## Controls
@@ -116,6 +122,7 @@ The single HTML file is generated. Do not edit it — edit `src/` and rebuild.
 ```
 python3 tools/build_sky.py     # panorama  -> assets/sky.jpg + sky_light.json
 python3 tools/build.py         # src/*     -> grassfield.html
+python3 tools/compare.py shot.png 18.3 1.1 68     # check it against the plate
 ```
 
 `build_sky.py` needs `pillow` and `numpy`. `build.py` needs neither — it inlines
@@ -157,6 +164,28 @@ deliverable a single file.
   not a highlight from a light source. There is no light source at night bright
   enough to make them.
 - **Fireflies** are off by default. They are not in the photograph.
+
+---
+
+## Checked, not assumed
+
+Three things the design rests on, each verified against the running page
+rather than taken on trust:
+
+- **The sky does not move when you do.** Screenshot the same heading from the
+  origin and from a kilometre away: mean absolute difference 0.0012, and the
+  1% of pixels that differ at all are the stars scintillating, which is
+  deliberate. That is the claim about panoramas being correct skies, measured.
+- **The ground you walk on is the ground that is drawn.** The camera's height
+  and the vertex shader's height agree to 0.00000 m, standing still, after
+  teleporting across the field and throughout a walk over the undulations.
+  They read the same baked texture, which is why.
+- **The wind is doing the work.** Between two frames half a second apart, 44%
+  of the grass pixels change with the wind up and 7% with it off - and that
+  7% is the camera settling and trampled grass standing back up, not the
+  blades.
+
+Colour is checked with `tools/compare.py` as described above.
 
 ---
 

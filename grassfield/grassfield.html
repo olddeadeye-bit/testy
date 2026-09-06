@@ -2690,11 +2690,15 @@ class World {
   step(dt, input, audio) {
     const s = this.settings;
     this.time += dt;
-    /* the wind veers slowly, the way real wind does */
-    this.windAngle += dt * 0.035 * Math.sin(this.time * 0.043 + 1.7);
+    /* The wind veers slowly, the way real wind does - but everything here
+       scales with the wind setting, so that turning it to zero leaves the
+       field genuinely still. A veering direction with no wind behind it
+       still rotates every blade, which is not what "0" should mean. */
+    const w = Math.min(1, s.wind * 1.4);
+    this.windAngle += dt * 0.035 * w * Math.sin(this.time * 0.043 + 1.7);
     this.windDir[0] = Math.cos(this.windAngle);
     this.windDir[1] = Math.sin(this.windAngle);
-    this.windTime += dt * (0.35 + s.wind * 0.85);
+    this.windTime += dt * 1.15 * w;
 
     /* ---- look ---- */
     const [ldx, ldy] = input.takeLook();
