@@ -2,6 +2,16 @@
    The world, and the loop that runs it.
    =================================================================== */
 
+/* Set after a context loss or an out-of-memory, and read on the next load
+   so that a machine which has already fallen over once comes back gently
+   instead of straight back into the thing that broke it. */
+const SAFE_KEY = 'grassfield.saferestart';
+const SAFE_MODE = (() => {
+  try { return localStorage.getItem(SAFE_KEY) === '1'; } catch (e) { return false; }
+})();
+function markSafeRestart() { try { localStorage.setItem(SAFE_KEY, '1'); } catch (e) {} }
+function clearSafeRestart() { try { localStorage.removeItem(SAFE_KEY); } catch (e) {} }
+
 const DEFAULTS = {
   quality: 'auto',
   renderScale: 1.0,
@@ -27,7 +37,11 @@ const DEFAULTS = {
   sound: false,
   volume: 0.55,
   showHud: true,
-  msaa: true
+  msaa: true,
+  /* Megabytes of video memory the render targets may use. This is the
+     setting that stops a high-DPI display asking the GPU for the better
+     part of a gigabyte and getting a half-painted frame back. */
+  vramBudget: 160
 };
 
 const QUALITY_PRESETS = {
@@ -46,6 +60,13 @@ class World {
     this.glw = new GL(canvas);
     const gl = this.glw.gl;
     this.settings = loadSettings(DEFAULTS);
+    if (SAFE_MODE) {
+      /* this machine has already fallen over once - come back gently */
+      this.settings.msaa = false;
+      this.settings.density = Math.min(this.settings.density, 0.5);
+      this.settings.grassRange = Math.min(this.settings.grassRange, 70);
+      this.settings.vramBudget = Math.min(this.settings.vramBudget, 64);
+    }
 
     /* ---------------- textures -------------------------------------- */
     this.skyTex = this.glw.texture({
@@ -132,6 +153,12 @@ class World {
 
     this.scene = null;
     this.rw = 0; this.rh = 0;
+    this.samples = 1;
+    /* Deliberately conservative to begin with. On a Retina display this
+       lands at roughly one buffer pixel per CSS pixel, which looks right
+       and costs a fifth of what going native would; auto-quality raises
+       it if the machine turns out to have the headroom. */
+    this.lastResizeAt = 0;
     this.frameMs = 16;
     this.fps = 60;
     this.autoScale = 1.0;
@@ -410,25 +437,95 @@ class World {
 
   /* ---------------------------------------------------------------- */
 
-  resize() {
+  /**
+   * Choose a drawing-buffer size and a sample count together, against a
+   * video-memory budget.
+   *
+   * This is the bug that made the ground stop being painted. Capping
+   * devicePixelRatio at 2 is not enough on its own: a 4x multisampled
+   * RGBA16F colour buffer and its depth buffer cost 48 bytes for every
+   * drawing-buffer pixel, so an uncapped Retina laptop asked for 8.3 MP
+   * (~460 MB of render targets) and a 27-inch Retina display for 14.7 MP
+   * (~825 MB). A laptop GPU answers that by thrashing, dropping draws or
+   * losing the context, and what you see is a half-painted frame.
+   *
+   * Budgeting PIXELS alone is not enough either - that spends the whole
+   * allowance on samples and then renders below one buffer pixel per CSS
+   * pixel, which is softer than it needs to be. So: take the resolution
+   * first, down to 1x CSS, and spend whatever is left on antialiasing.
+   */
+  planTarget() {
     const s = this.settings;
+    const gl = this.glw.gl;
     const dpr = Math.min(devicePixelRatio || 1, 2);
     const scale = s.renderScale * this.autoScale;
-    const w = Math.max(320, Math.round(innerWidth * dpr * scale));
-    const h = Math.max(240, Math.round(innerHeight * dpr * scale));
+
+    const cssPx = Math.max(innerWidth * innerHeight, 1);
+    const wantPx = Math.min(cssPx * dpr * dpr * scale * scale, 6.0e6);
+    /* below this the upscale starts to show, so we trade samples first */
+    const floorPx = cssPx * scale * scale;
+
+    const budget = clamp(s.vramBudget, 48, 1024) * 1048576;
+    /* colour + depth are multisampled; the resolve, bloom chain and the
+       canvas itself are not */
+    const bytesPerPx = (n) => 12 * n + 18.7;
+    const maxPxFor = (n) => budget / bytesPerPx(n);
+
+    const wanted = s.msaa
+      ? ((QUALITY_PRESETS[s.quality] || QUALITY_PRESETS.high).msaa || 4) : 1;
+    const maxSamples = Math.min(wanted, gl.getParameter(gl.MAX_SAMPLES) || 1);
+
+    let samples = 1, px = Math.min(wantPx, maxPxFor(1));
+    for (let n = maxSamples; n >= 1; n--) {
+      const cap = maxPxFor(n);
+      if (cap >= floorPx || n === 1) { samples = n; px = Math.min(wantPx, cap); break; }
+    }
+
+    const aspect = innerWidth / Math.max(innerHeight, 1);
+    let h = Math.sqrt(px / Math.max(aspect, 1e-3));
+    let w = h * aspect;
+
+    const lim = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),
+                         gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+    const shrink = Math.max(w / lim, h / lim, 1);
+    return {
+      w: Math.max(320, Math.round(w / shrink)),
+      h: Math.max(240, Math.round(h / shrink)),
+      samples: samples > 1 ? samples : 1
+    };
+  }
+
+  resize() {
+    const gl = this.glw.gl;
+    const plan = this.planTarget();
+    const { w, h } = plan;
+
     this.canvas.width = w;
     this.canvas.height = h;
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
-    if (this.rw === w && this.rh === h) return;
+    if (this.rw === w && this.rh === h && this.samples === plan.samples) return;
     this.rw = w; this.rh = h;
+
     if (this.scene) this.scene.free();
-    const samples = s.msaa ? (QUALITY_PRESETS[s.quality] || QUALITY_PRESETS.high).msaa || 4 : 1;
-    this.scene = samples > 1
-      ? this.glw.targetMS(w, h, samples, { depth: true })
+    this.scene = plan.samples > 1
+      ? this.glw.targetMS(w, h, plan.samples, { depth: true })
       : this.glw.target(w, h, { depth: true });
-    const preset = QUALITY_PRESETS[s.quality] || QUALITY_PRESETS.high;
+    const preset = QUALITY_PRESETS[this.settings.quality] || QUALITY_PRESETS.high;
     this.post.resize(w, h, preset.bloomLevels || 6);
+    this.samples = this.scene.samples || 1;
+
+    /* Running out of video memory is reported through getError, not by an
+       exception, and the symptom downstream is a half-painted frame rather
+       than a crash. If it happens, halve the budget and try again. */
+    const err = gl.getError();
+    if (err === gl.OUT_OF_MEMORY && this.settings.vramBudget > 56) {
+      console.warn('grassfield: out of video memory at ' + w + 'x' + h +
+                   ' (' + plan.samples + 'x AA), halving the budget');
+      this.settings.vramBudget = Math.max(48, this.settings.vramBudget * 0.5);
+      this.rw = this.rh = 0;
+      this.resize();
+    }
   }
 
   /** Gust strength at the player, for the sound and the readout. */
@@ -570,7 +667,18 @@ class World {
 
     const bloomTex = this.post.bloom(this.scene.tex, s.exposure, 0.32, 0.18, 1.3);
     this.post.composite(this.scene.tex, bloomTex, s);
+
+    /* Grab the frame here, still inside the task that drew it. Without
+       preserveDrawingBuffer the contents are gone once we yield. */
+    if (this._shot) {
+      const done = this._shot;
+      this._shot = null;
+      try { this.canvas.toBlob(done, 'image/png'); } catch (e) { done(null); }
+    }
   }
+
+  /** Ask for a PNG of the next rendered frame. */
+  requestShot(done) { this._shot = done; }
 }
 
 /** Rotate `v` about unit axis `a` by angle `t` (Rodrigues). */

@@ -30,6 +30,8 @@ const CONTROLS = [
   { k: 'quality',     label: 'Quality', select: [
       ['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'],
       ['high', 'High'], ['ultra', 'Ultra']] },
+  { k: 'vramBudget',  label: 'Video memory',       min: 48,   max: 1024, step: 8, unit: ' MB', needsResize: true,
+    note: 'What the render targets may cost. Resolution is taken first, down to one buffer pixel per screen pixel; whatever is left buys antialiasing. Raise it if you have a discrete GPU, lower it if the picture breaks up.' },
   { k: 'renderScale', label: 'Render scale',       min: 0.4,  max: 1.5,  step: 0.05, needsResize: true },
   { k: 'msaa',        label: 'Antialiasing',        toggle: true, needsResize: true,
     note: 'Multisampling. Grass is almost all thin edges, so this is the single biggest quality setting here.' },
@@ -59,6 +61,7 @@ function boot() {
   };
 
   let world, input, audio;
+  let running = true;
 
   const setProgress = (pct, msg) => {
     $('loadBar').firstElementChild.style.width = pct + '%';
@@ -113,6 +116,28 @@ function boot() {
     world.resize();
     addEventListener('resize', () => { world.resize(); compassDirty = true; });
 
+    /* A lost context is otherwise completely silent: the loop keeps
+       running, every draw is a no-op, and all you see is a black screen. */
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      running = false;
+      markSafeRestart();
+      gate.classList.remove('gone');
+      $('loadWrap').hidden = true;
+      $('playBtn').hidden = true;
+      $('gateKeys').hidden = true;
+      note.innerHTML = 'The graphics context was lost - usually the GPU running out of ' +
+        'memory.<br><br><button id="reloadBtn" style="margin-top:10px">Reload, more gently</button>';
+      const rb = $('reloadBtn');
+      if (rb) rb.addEventListener('click', () => location.reload());
+    });
+
+    if (SAFE_MODE) {
+      setTimeout(() => toast('restarted at reduced quality after a graphics fault'), 900);
+      /* one clean minute and we stop treating this machine as fragile */
+      setTimeout(clearSafeRestart, 60000);
+    }
+
     buildPanel(world, input, audio);
     applyHud(s);
 
@@ -158,10 +183,11 @@ function boot() {
 
     /* ---------------- loop ---------------- */
     let last = performance.now();
-    let acc = 0, frames = 0, fpsT = 0;
+    let frames = 0, fpsT = 0;
     let msAvg = 16.7;
 
     function frame(now) {
+      if (!running) return;
       requestAnimationFrame(frame);
       let dt = (now - last) / 1000;
       last = now;
@@ -187,12 +213,21 @@ function boot() {
 
   /* ---------------------------------------------------------------- */
   function autoQuality(world, ms) {
-    /* aim for a comfortable 60; back off in coarse steps and climb back
-       slowly so the picture does not visibly breathe */
+    /* Aim for a comfortable 60. Two separate knobs, because they cost
+       very different things: grass density is free to change every time
+       we look at it, while changing the resolution reallocates every
+       render target we own. The old version reallocated ~460 MB of
+       buffers for a 0.3% area change, twice a second. */
     const prev = world.autoScale;
-    if (ms > 21 && world.autoScale > 0.45) world.autoScale = Math.max(0.45, world.autoScale - 0.08);
-    else if (ms < 11 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.03);
-    if (Math.abs(prev - world.autoScale) > 0.001) world.resize();
+    if (ms > 22 && world.autoScale > 0.40) world.autoScale = Math.max(0.40, world.autoScale - 0.10);
+    else if (ms < 10 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.05);
+
+    const now = performance.now();
+    const moved = Math.abs(world.autoScale / (prev || 1) - 1);
+    if (moved > 0.06 && now - world.lastResizeAt > 1500) {
+      world.lastResizeAt = now;
+      world.resize();
+    }
   }
 
   function updateReadout(world, ms) {
@@ -205,7 +240,9 @@ function boot() {
       Math.round(dirDeg) + '° · ' +
       (world.grass.instanceCount / 1000).toFixed(0) + 'k blades';
     $('rPos').textContent =
-      world.pos[0].toFixed(0) + ', ' + world.pos[2].toFixed(0) + ' m';
+      world.pos[0].toFixed(0) + ', ' + world.pos[2].toFixed(0) + ' m  ·  ' +
+      world.canvas.width + '\u00d7' + world.canvas.height +
+      (world.samples > 1 ? '  ' + world.samples + '\u00d7 AA' : '');
   }
 
   const CARDINALS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -322,6 +359,8 @@ function boot() {
     $('panelClose').addEventListener('click', togglePanel);
     $('btnReset').addEventListener('click', () => {
       Object.assign(world.settings, DEFAULTS);
+      world.rw = world.rh = 0;
+      clearSafeRestart();
       applyQuality(world);
       input.sensitivity = world.settings.sensitivity;
       input.invertY = world.settings.invertY;
@@ -334,6 +373,18 @@ function boot() {
       toast('defaults restored');
     });
     $('btnShot').addEventListener('click', screenshot);
+    const diagBtn = $('btnDiag');
+    if (diagBtn) diagBtn.addEventListener('click', () => {
+      const text = diagnostics();
+      console.log(text);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => toast('diagnostics copied'))
+          .catch(() => toast('diagnostics printed to the console'));
+      } else {
+        toast('diagnostics printed to the console');
+      }
+    });
   }
 
   function syncPanel() {
@@ -366,6 +417,7 @@ function boot() {
     if (c.k === 'sound') audio.setEnabled(s.sound);
     if (c.k === 'volume') audio.setVolume(s.volume);
     if (c.k === 'showHud') applyHud(s);
+    if (c.k === 'msaa' || c.k === 'quality') world.rw = world.rh = 0;
     if (c.needsResize) world.resize();
     saveSettings(s);
   }
@@ -381,17 +433,49 @@ function boot() {
   }
 
   function screenshot() {
-    try {
-      $('view').toBlob((blob) => {
-        if (!blob) { toast('could not save the frame'); return; }
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'grassfield-' + Date.now() + '.png';
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-        toast('frame saved');
-      }, 'image/png');
-    } catch (e) { toast('could not save the frame'); }
+    if (!world) return;
+    world.requestShot((blob) => {
+      if (!blob) { toast('could not save the frame'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'grassfield-' + Date.now() + '.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      toast('frame saved');
+    });
+  }
+
+  /** Everything worth knowing if it still will not run somewhere. */
+  function diagnostics() {
+    const lines = [];
+    lines.push('Grassfield diagnostics');
+    lines.push('userAgent: ' + navigator.userAgent);
+    lines.push('devicePixelRatio: ' + devicePixelRatio +
+               '   window: ' + innerWidth + 'x' + innerHeight);
+    if (world) {
+      const gl = world.glw.gl;
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      lines.push('renderer: ' + (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)));
+      lines.push('vendor: ' + (dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR)));
+      lines.push('version: ' + gl.getParameter(gl.VERSION));
+      lines.push('drawing buffer: ' + world.canvas.width + 'x' + world.canvas.height +
+                 '  (' + (world.canvas.width * world.canvas.height / 1e6).toFixed(2) + ' MP)' +
+                 '  msaa: ' + world.samples + 'x');
+      lines.push('vram budget: ' + world.settings.vramBudget + ' MB' +
+                 '   autoScale: ' + world.autoScale.toFixed(2));
+      lines.push('half-float targets: ' + world.glw.hdr +
+                 '   colour_buffer_half_float: ' + !!world.glw.extHalf +
+                 '   colour_buffer_float: ' + !!world.glw.extFloat);
+      lines.push('MAX_TEXTURE_SIZE: ' + gl.getParameter(gl.MAX_TEXTURE_SIZE) +
+                 '   MAX_RENDERBUFFER_SIZE: ' + gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) +
+                 '   MAX_SAMPLES: ' + gl.getParameter(gl.MAX_SAMPLES));
+      lines.push('fps: ' + world.fps.toFixed(1) + '   blades submitted: ' + world.grass.instanceCount);
+      lines.push('glGetError: ' + gl.getError() + '   contextLost: ' + gl.isContextLost());
+      lines.push('settings: ' + JSON.stringify(world.settings));
+    } else {
+      lines.push('renderer never started');
+    }
+    return lines.join('\n');
   }
 
   /* expose for the panel's sync helper and for poking at from a console */

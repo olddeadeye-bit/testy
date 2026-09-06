@@ -100,8 +100,16 @@ you would rather pin it, choose Low / Medium / High / Ultra explicitly.
 
 The settings worth knowing:
 
-- **Antialiasing** is the single biggest one. Grass is hundreds of thousands of
-  shapes a pixel or less across — the worst case there is for aliasing — and
+- **Video memory** is the one that matters if the picture breaks up. Render
+  targets are budgeted, and resolution and antialiasing are chosen together to
+  fit: resolution comes first, down to one buffer pixel per screen pixel, and
+  whatever is left buys samples. Raise it if you have a discrete GPU. It exists
+  because capping device pixel ratio alone is *not* enough — a 4× multisampled
+  HDR colour buffer plus its depth costs ~48 MB per megapixel, so an uncapped
+  Retina display asks for 460–825 MB of render targets and a laptop GPU answers
+  by dropping draws, which looks like the ground never being painted.
+- **Antialiasing** is the biggest quality lever. Grass is hundreds of thousands
+  of shapes a pixel or less across — the worst case there is for aliasing — and
   without multisampling the blades break into crawling dashes as soon as the
   wind moves them.
 - **Grass density** widens the lattice rather than discarding blades, so turning
@@ -186,6 +194,17 @@ rather than taken on trust:
   blades.
 
 Colour is checked with `tools/compare.py` as described above.
+
+---
+
+## If it misbehaves
+
+Open Settings (**O**) and press **Diagnostics** — it copies the renderer,
+driver, drawing-buffer size, sample count, memory budget and limits to the
+clipboard, which is everything needed to tell what went wrong.
+
+If the graphics context is ever lost, the page says so instead of going quietly
+black, and the next load comes back at reduced quality on its own.
 
 ---
 

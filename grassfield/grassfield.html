@@ -85,8 +85,8 @@ body.noPost #vignetteFallback{opacity:1}
 #panelClose{background:none;border:0;color:var(--dim);font-size:24px;line-height:1;cursor:pointer;padding:0 4px}
 #panelClose:hover{color:var(--ink)}
 #panelBody{flex:1;overflow-y:auto;padding:8px 20px 20px;scrollbar-width:thin}
-#panel footer{padding:14px 20px;border-top:1px solid var(--edge);display:flex;gap:10px}
-#panel footer button{flex:1;appearance:none;border:1px solid var(--edge);background:transparent;
+#panel footer{padding:14px 20px;border-top:1px solid var(--edge);display:flex;gap:8px;flex-wrap:wrap}
+#panel footer button{flex:1 1 30%;min-width:88px;appearance:none;border:1px solid var(--edge);background:transparent;
   color:var(--dim);font:inherit;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
   padding:10px;border-radius:2px;cursor:pointer;transition:.18s}
 #panel footer button:hover{color:var(--ink);border-color:rgba(190,235,210,.4)}
@@ -172,6 +172,7 @@ body.touch #stick{display:block}
   <footer>
     <button id="btnReset">Reset to defaults</button>
     <button id="btnShot">Save a frame</button>
+    <button id="btnDiag" title="Copy renderer details to the clipboard">Diagnostics</button>
   </footer>
 </div>
 
@@ -369,8 +370,11 @@ class GL {
   constructor(canvas) {
     const opts = {
       alpha: false, antialias: false, depth: true, stencil: false,
-      powerPreference: 'high-performance',
-      preserveDrawingBuffer: true       // so "save a frame" can read pixels
+      powerPreference: 'high-performance'
+      // NB: no preserveDrawingBuffer. It makes the browser keep and copy a
+      // second full-size buffer every frame, which at Retina resolutions is
+      // tens of megabytes of pure overhead. "Save a frame" instead calls
+      // toBlob inside the same task as the draw, while the buffer is valid.
     };
     const gl = canvas.getContext('webgl2', opts);
     if (!gl) throw new Error('WEBGL2_UNAVAILABLE');
@@ -2244,6 +2248,16 @@ class Input {
    The world, and the loop that runs it.
    =================================================================== */
 
+/* Set after a context loss or an out-of-memory, and read on the next load
+   so that a machine which has already fallen over once comes back gently
+   instead of straight back into the thing that broke it. */
+const SAFE_KEY = 'grassfield.saferestart';
+const SAFE_MODE = (() => {
+  try { return localStorage.getItem(SAFE_KEY) === '1'; } catch (e) { return false; }
+})();
+function markSafeRestart() { try { localStorage.setItem(SAFE_KEY, '1'); } catch (e) {} }
+function clearSafeRestart() { try { localStorage.removeItem(SAFE_KEY); } catch (e) {} }
+
 const DEFAULTS = {
   quality: 'auto',
   renderScale: 1.0,
@@ -2269,7 +2283,11 @@ const DEFAULTS = {
   sound: false,
   volume: 0.55,
   showHud: true,
-  msaa: true
+  msaa: true,
+  /* Megabytes of video memory the render targets may use. This is the
+     setting that stops a high-DPI display asking the GPU for the better
+     part of a gigabyte and getting a half-painted frame back. */
+  vramBudget: 160
 };
 
 const QUALITY_PRESETS = {
@@ -2288,6 +2306,13 @@ class World {
     this.glw = new GL(canvas);
     const gl = this.glw.gl;
     this.settings = loadSettings(DEFAULTS);
+    if (SAFE_MODE) {
+      /* this machine has already fallen over once - come back gently */
+      this.settings.msaa = false;
+      this.settings.density = Math.min(this.settings.density, 0.5);
+      this.settings.grassRange = Math.min(this.settings.grassRange, 70);
+      this.settings.vramBudget = Math.min(this.settings.vramBudget, 64);
+    }
 
     /* ---------------- textures -------------------------------------- */
     this.skyTex = this.glw.texture({
@@ -2374,6 +2399,12 @@ class World {
 
     this.scene = null;
     this.rw = 0; this.rh = 0;
+    this.samples = 1;
+    /* Deliberately conservative to begin with. On a Retina display this
+       lands at roughly one buffer pixel per CSS pixel, which looks right
+       and costs a fifth of what going native would; auto-quality raises
+       it if the machine turns out to have the headroom. */
+    this.lastResizeAt = 0;
     this.frameMs = 16;
     this.fps = 60;
     this.autoScale = 1.0;
@@ -2652,25 +2683,95 @@ class World {
 
   /* ---------------------------------------------------------------- */
 
-  resize() {
+  /**
+   * Choose a drawing-buffer size and a sample count together, against a
+   * video-memory budget.
+   *
+   * This is the bug that made the ground stop being painted. Capping
+   * devicePixelRatio at 2 is not enough on its own: a 4x multisampled
+   * RGBA16F colour buffer and its depth buffer cost 48 bytes for every
+   * drawing-buffer pixel, so an uncapped Retina laptop asked for 8.3 MP
+   * (~460 MB of render targets) and a 27-inch Retina display for 14.7 MP
+   * (~825 MB). A laptop GPU answers that by thrashing, dropping draws or
+   * losing the context, and what you see is a half-painted frame.
+   *
+   * Budgeting PIXELS alone is not enough either - that spends the whole
+   * allowance on samples and then renders below one buffer pixel per CSS
+   * pixel, which is softer than it needs to be. So: take the resolution
+   * first, down to 1x CSS, and spend whatever is left on antialiasing.
+   */
+  planTarget() {
     const s = this.settings;
+    const gl = this.glw.gl;
     const dpr = Math.min(devicePixelRatio || 1, 2);
     const scale = s.renderScale * this.autoScale;
-    const w = Math.max(320, Math.round(innerWidth * dpr * scale));
-    const h = Math.max(240, Math.round(innerHeight * dpr * scale));
+
+    const cssPx = Math.max(innerWidth * innerHeight, 1);
+    const wantPx = Math.min(cssPx * dpr * dpr * scale * scale, 6.0e6);
+    /* below this the upscale starts to show, so we trade samples first */
+    const floorPx = cssPx * scale * scale;
+
+    const budget = clamp(s.vramBudget, 48, 1024) * 1048576;
+    /* colour + depth are multisampled; the resolve, bloom chain and the
+       canvas itself are not */
+    const bytesPerPx = (n) => 12 * n + 18.7;
+    const maxPxFor = (n) => budget / bytesPerPx(n);
+
+    const wanted = s.msaa
+      ? ((QUALITY_PRESETS[s.quality] || QUALITY_PRESETS.high).msaa || 4) : 1;
+    const maxSamples = Math.min(wanted, gl.getParameter(gl.MAX_SAMPLES) || 1);
+
+    let samples = 1, px = Math.min(wantPx, maxPxFor(1));
+    for (let n = maxSamples; n >= 1; n--) {
+      const cap = maxPxFor(n);
+      if (cap >= floorPx || n === 1) { samples = n; px = Math.min(wantPx, cap); break; }
+    }
+
+    const aspect = innerWidth / Math.max(innerHeight, 1);
+    let h = Math.sqrt(px / Math.max(aspect, 1e-3));
+    let w = h * aspect;
+
+    const lim = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),
+                         gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+    const shrink = Math.max(w / lim, h / lim, 1);
+    return {
+      w: Math.max(320, Math.round(w / shrink)),
+      h: Math.max(240, Math.round(h / shrink)),
+      samples: samples > 1 ? samples : 1
+    };
+  }
+
+  resize() {
+    const gl = this.glw.gl;
+    const plan = this.planTarget();
+    const { w, h } = plan;
+
     this.canvas.width = w;
     this.canvas.height = h;
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
-    if (this.rw === w && this.rh === h) return;
+    if (this.rw === w && this.rh === h && this.samples === plan.samples) return;
     this.rw = w; this.rh = h;
+
     if (this.scene) this.scene.free();
-    const samples = s.msaa ? (QUALITY_PRESETS[s.quality] || QUALITY_PRESETS.high).msaa || 4 : 1;
-    this.scene = samples > 1
-      ? this.glw.targetMS(w, h, samples, { depth: true })
+    this.scene = plan.samples > 1
+      ? this.glw.targetMS(w, h, plan.samples, { depth: true })
       : this.glw.target(w, h, { depth: true });
-    const preset = QUALITY_PRESETS[s.quality] || QUALITY_PRESETS.high;
+    const preset = QUALITY_PRESETS[this.settings.quality] || QUALITY_PRESETS.high;
     this.post.resize(w, h, preset.bloomLevels || 6);
+    this.samples = this.scene.samples || 1;
+
+    /* Running out of video memory is reported through getError, not by an
+       exception, and the symptom downstream is a half-painted frame rather
+       than a crash. If it happens, halve the budget and try again. */
+    const err = gl.getError();
+    if (err === gl.OUT_OF_MEMORY && this.settings.vramBudget > 56) {
+      console.warn('grassfield: out of video memory at ' + w + 'x' + h +
+                   ' (' + plan.samples + 'x AA), halving the budget');
+      this.settings.vramBudget = Math.max(48, this.settings.vramBudget * 0.5);
+      this.rw = this.rh = 0;
+      this.resize();
+    }
   }
 
   /** Gust strength at the player, for the sound and the readout. */
@@ -2812,7 +2913,18 @@ class World {
 
     const bloomTex = this.post.bloom(this.scene.tex, s.exposure, 0.32, 0.18, 1.3);
     this.post.composite(this.scene.tex, bloomTex, s);
+
+    /* Grab the frame here, still inside the task that drew it. Without
+       preserveDrawingBuffer the contents are gone once we yield. */
+    if (this._shot) {
+      const done = this._shot;
+      this._shot = null;
+      try { this.canvas.toBlob(done, 'image/png'); } catch (e) { done(null); }
+    }
   }
+
+  /** Ask for a PNG of the next rendered frame. */
+  requestShot(done) { this._shot = done; }
 }
 
 /** Rotate `v` about unit axis `a` by angle `t` (Rodrigues). */
@@ -2863,6 +2975,8 @@ const CONTROLS = [
   { k: 'quality',     label: 'Quality', select: [
       ['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'],
       ['high', 'High'], ['ultra', 'Ultra']] },
+  { k: 'vramBudget',  label: 'Video memory',       min: 48,   max: 1024, step: 8, unit: ' MB', needsResize: true,
+    note: 'What the render targets may cost. Resolution is taken first, down to one buffer pixel per screen pixel; whatever is left buys antialiasing. Raise it if you have a discrete GPU, lower it if the picture breaks up.' },
   { k: 'renderScale', label: 'Render scale',       min: 0.4,  max: 1.5,  step: 0.05, needsResize: true },
   { k: 'msaa',        label: 'Antialiasing',        toggle: true, needsResize: true,
     note: 'Multisampling. Grass is almost all thin edges, so this is the single biggest quality setting here.' },
@@ -2892,6 +3006,7 @@ function boot() {
   };
 
   let world, input, audio;
+  let running = true;
 
   const setProgress = (pct, msg) => {
     $('loadBar').firstElementChild.style.width = pct + '%';
@@ -2946,6 +3061,28 @@ function boot() {
     world.resize();
     addEventListener('resize', () => { world.resize(); compassDirty = true; });
 
+    /* A lost context is otherwise completely silent: the loop keeps
+       running, every draw is a no-op, and all you see is a black screen. */
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      running = false;
+      markSafeRestart();
+      gate.classList.remove('gone');
+      $('loadWrap').hidden = true;
+      $('playBtn').hidden = true;
+      $('gateKeys').hidden = true;
+      note.innerHTML = 'The graphics context was lost - usually the GPU running out of ' +
+        'memory.<br><br><button id="reloadBtn" style="margin-top:10px">Reload, more gently</button>';
+      const rb = $('reloadBtn');
+      if (rb) rb.addEventListener('click', () => location.reload());
+    });
+
+    if (SAFE_MODE) {
+      setTimeout(() => toast('restarted at reduced quality after a graphics fault'), 900);
+      /* one clean minute and we stop treating this machine as fragile */
+      setTimeout(clearSafeRestart, 60000);
+    }
+
     buildPanel(world, input, audio);
     applyHud(s);
 
@@ -2991,10 +3128,11 @@ function boot() {
 
     /* ---------------- loop ---------------- */
     let last = performance.now();
-    let acc = 0, frames = 0, fpsT = 0;
+    let frames = 0, fpsT = 0;
     let msAvg = 16.7;
 
     function frame(now) {
+      if (!running) return;
       requestAnimationFrame(frame);
       let dt = (now - last) / 1000;
       last = now;
@@ -3020,12 +3158,21 @@ function boot() {
 
   /* ---------------------------------------------------------------- */
   function autoQuality(world, ms) {
-    /* aim for a comfortable 60; back off in coarse steps and climb back
-       slowly so the picture does not visibly breathe */
+    /* Aim for a comfortable 60. Two separate knobs, because they cost
+       very different things: grass density is free to change every time
+       we look at it, while changing the resolution reallocates every
+       render target we own. The old version reallocated ~460 MB of
+       buffers for a 0.3% area change, twice a second. */
     const prev = world.autoScale;
-    if (ms > 21 && world.autoScale > 0.45) world.autoScale = Math.max(0.45, world.autoScale - 0.08);
-    else if (ms < 11 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.03);
-    if (Math.abs(prev - world.autoScale) > 0.001) world.resize();
+    if (ms > 22 && world.autoScale > 0.40) world.autoScale = Math.max(0.40, world.autoScale - 0.10);
+    else if (ms < 10 && world.autoScale < 1.0) world.autoScale = Math.min(1.0, world.autoScale + 0.05);
+
+    const now = performance.now();
+    const moved = Math.abs(world.autoScale / (prev || 1) - 1);
+    if (moved > 0.06 && now - world.lastResizeAt > 1500) {
+      world.lastResizeAt = now;
+      world.resize();
+    }
   }
 
   function updateReadout(world, ms) {
@@ -3038,7 +3185,9 @@ function boot() {
       Math.round(dirDeg) + '° · ' +
       (world.grass.instanceCount / 1000).toFixed(0) + 'k blades';
     $('rPos').textContent =
-      world.pos[0].toFixed(0) + ', ' + world.pos[2].toFixed(0) + ' m';
+      world.pos[0].toFixed(0) + ', ' + world.pos[2].toFixed(0) + ' m  ·  ' +
+      world.canvas.width + '\u00d7' + world.canvas.height +
+      (world.samples > 1 ? '  ' + world.samples + '\u00d7 AA' : '');
   }
 
   const CARDINALS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -3155,6 +3304,8 @@ function boot() {
     $('panelClose').addEventListener('click', togglePanel);
     $('btnReset').addEventListener('click', () => {
       Object.assign(world.settings, DEFAULTS);
+      world.rw = world.rh = 0;
+      clearSafeRestart();
       applyQuality(world);
       input.sensitivity = world.settings.sensitivity;
       input.invertY = world.settings.invertY;
@@ -3167,6 +3318,18 @@ function boot() {
       toast('defaults restored');
     });
     $('btnShot').addEventListener('click', screenshot);
+    const diagBtn = $('btnDiag');
+    if (diagBtn) diagBtn.addEventListener('click', () => {
+      const text = diagnostics();
+      console.log(text);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => toast('diagnostics copied'))
+          .catch(() => toast('diagnostics printed to the console'));
+      } else {
+        toast('diagnostics printed to the console');
+      }
+    });
   }
 
   function syncPanel() {
@@ -3199,6 +3362,7 @@ function boot() {
     if (c.k === 'sound') audio.setEnabled(s.sound);
     if (c.k === 'volume') audio.setVolume(s.volume);
     if (c.k === 'showHud') applyHud(s);
+    if (c.k === 'msaa' || c.k === 'quality') world.rw = world.rh = 0;
     if (c.needsResize) world.resize();
     saveSettings(s);
   }
@@ -3214,17 +3378,49 @@ function boot() {
   }
 
   function screenshot() {
-    try {
-      $('view').toBlob((blob) => {
-        if (!blob) { toast('could not save the frame'); return; }
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'grassfield-' + Date.now() + '.png';
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-        toast('frame saved');
-      }, 'image/png');
-    } catch (e) { toast('could not save the frame'); }
+    if (!world) return;
+    world.requestShot((blob) => {
+      if (!blob) { toast('could not save the frame'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'grassfield-' + Date.now() + '.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      toast('frame saved');
+    });
+  }
+
+  /** Everything worth knowing if it still will not run somewhere. */
+  function diagnostics() {
+    const lines = [];
+    lines.push('Grassfield diagnostics');
+    lines.push('userAgent: ' + navigator.userAgent);
+    lines.push('devicePixelRatio: ' + devicePixelRatio +
+               '   window: ' + innerWidth + 'x' + innerHeight);
+    if (world) {
+      const gl = world.glw.gl;
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      lines.push('renderer: ' + (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)));
+      lines.push('vendor: ' + (dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR)));
+      lines.push('version: ' + gl.getParameter(gl.VERSION));
+      lines.push('drawing buffer: ' + world.canvas.width + 'x' + world.canvas.height +
+                 '  (' + (world.canvas.width * world.canvas.height / 1e6).toFixed(2) + ' MP)' +
+                 '  msaa: ' + world.samples + 'x');
+      lines.push('vram budget: ' + world.settings.vramBudget + ' MB' +
+                 '   autoScale: ' + world.autoScale.toFixed(2));
+      lines.push('half-float targets: ' + world.glw.hdr +
+                 '   colour_buffer_half_float: ' + !!world.glw.extHalf +
+                 '   colour_buffer_float: ' + !!world.glw.extFloat);
+      lines.push('MAX_TEXTURE_SIZE: ' + gl.getParameter(gl.MAX_TEXTURE_SIZE) +
+                 '   MAX_RENDERBUFFER_SIZE: ' + gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) +
+                 '   MAX_SAMPLES: ' + gl.getParameter(gl.MAX_SAMPLES));
+      lines.push('fps: ' + world.fps.toFixed(1) + '   blades submitted: ' + world.grass.instanceCount);
+      lines.push('glGetError: ' + gl.getError() + '   contextLost: ' + gl.isContextLost());
+      lines.push('settings: ' + JSON.stringify(world.settings));
+    } else {
+      lines.push('renderer never started');
+    }
+    return lines.join('\n');
   }
 
   /* expose for the panel's sync helper and for poking at from a console */

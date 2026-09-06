@@ -8,8 +8,11 @@ class GL {
   constructor(canvas) {
     const opts = {
       alpha: false, antialias: false, depth: true, stencil: false,
-      powerPreference: 'high-performance',
-      preserveDrawingBuffer: true       // so "save a frame" can read pixels
+      powerPreference: 'high-performance'
+      // NB: no preserveDrawingBuffer. It makes the browser keep and copy a
+      // second full-size buffer every frame, which at Retina resolutions is
+      // tens of megabytes of pure overhead. "Save a frame" instead calls
+      // toBlob inside the same task as the draw, while the buffer is valid.
     };
     const gl = canvas.getContext('webgl2', opts);
     if (!gl) throw new Error('WEBGL2_UNAVAILABLE');

@@ -77,8 +77,8 @@ body.noPost #vignetteFallback{opacity:1}
 #panelClose{background:none;border:0;color:var(--dim);font-size:24px;line-height:1;cursor:pointer;padding:0 4px}
 #panelClose:hover{color:var(--ink)}
 #panelBody{flex:1;overflow-y:auto;padding:8px 20px 20px;scrollbar-width:thin}
-#panel footer{padding:14px 20px;border-top:1px solid var(--edge);display:flex;gap:10px}
-#panel footer button{flex:1;appearance:none;border:1px solid var(--edge);background:transparent;
+#panel footer{padding:14px 20px;border-top:1px solid var(--edge);display:flex;gap:8px;flex-wrap:wrap}
+#panel footer button{flex:1 1 30%;min-width:88px;appearance:none;border:1px solid var(--edge);background:transparent;
   color:var(--dim);font:inherit;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
   padding:10px;border-radius:2px;cursor:pointer;transition:.18s}
 #panel footer button:hover{color:var(--ink);border-color:rgba(190,235,210,.4)}
