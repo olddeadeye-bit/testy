@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#05070a">
+<title>Grassfield &mdash; a walkable night prairie</title>
+<style>
+/*@CSS@*/
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="vignetteFallback"></div>
+
+<!-- ================= title / click-to-play ================= -->
+<div id="gate" class="overlay">
+  <div class="gateInner">
+    <h1>Grassfield</h1>
+    <p class="sub">A night prairie under the Milky Way. Walk anywhere; the wind never stops.</p>
+    <div id="loadWrap"><div id="loadBar"><i></i></div><div id="loadMsg">preparing the field&hellip;</div></div>
+    <button id="playBtn" hidden>Enter the field</button>
+    <ul class="keys" id="gateKeys" hidden>
+      <li><b>W A S D</b> walk</li>
+      <li><b>Shift</b> run</li>
+      <li><b>Space</b> hop</li>
+      <li><b>C</b> crouch</li>
+      <li><b>Mouse</b> look</li>
+      <li><b>O</b> settings</li>
+      <li><b>H</b> hide interface</li>
+      <li><b>M</b> sound</li>
+      <li><b>Esc</b> release cursor</li>
+    </ul>
+    <p class="note" id="gateNote"></p>
+  </div>
+</div>
+
+<!-- ================= heads-up display ================= -->
+<div id="hud" class="hidden">
+  <div id="compass"><div id="compassTape"></div><div id="compassPin"></div></div>
+  <div id="readout">
+    <span id="rFps">--</span>
+    <span id="rWind">--</span>
+    <span id="rPos">--</span>
+  </div>
+  <div id="hint">O &middot; settings &nbsp; H &middot; hide &nbsp; Esc &middot; cursor</div>
+</div>
+
+<!-- ================= settings ================= -->
+<div id="panel" class="hidden">
+  <header><h2>Settings</h2><button id="panelClose" title="Close">&times;</button></header>
+  <div id="panelBody"></div>
+  <footer>
+    <button id="btnReset">Reset to defaults</button>
+    <button id="btnShot">Save a frame</button>
+  </footer>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/*@JS@*/
+</script>
+</body>
+</html>
