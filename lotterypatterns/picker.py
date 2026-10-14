@@ -104,11 +104,13 @@ def share_index(numbers: tuple[int, ...], game: Game) -> float:
     elif len(set(gaps)) <= 2 and len(gaps) >= 4:
         index *= 1.3
 
-    # All dates is the single most over-played shape there is.
-    if ordered[-1] <= 31:
-        index *= 1.9
-    elif ordered[-1] <= 12:
+    # All dates is the single most over-played shape there is, and a line that
+    # fits inside the twelve months is more over-played still. Test the
+    # narrower case first, or it never fires.
+    if ordered[-1] <= 12:
         index *= 3.0
+    elif ordered[-1] <= 31:
+        index *= 1.9
 
     # Lines that sit in one part of the slip get picked (and drawn) together.
     decades = {(n - 1) // 10 for n in ordered}

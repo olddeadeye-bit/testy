@@ -127,6 +127,16 @@ class TestPopularityModel(unittest.TestCase):
         self.assertGreater(share_index((2, 5, 9, 14, 20, 27), LOTTO),
                            share_index((35, 39, 44, 48, 53, 57), LOTTO))
 
+    def test_an_all_months_line_outscores_an_all_days_line(self):
+        """1-12 is more over-played than 1-31, so it must score higher.
+
+        The two tests are nested, so checking the wider one first makes the
+        narrower unreachable — which is exactly the bug this catches.
+        """
+        months = share_index((2, 4, 6, 8, 10, 12), LOTTO)
+        days = share_index((2, 4, 6, 8, 10, 29), LOTTO)
+        self.assertGreater(months, days)
+
     def test_seven_is_the_most_played_single_number(self):
         from lotterypatterns.picker import _base_popularity
         self.assertEqual(max(range(1, 60), key=_base_popularity), 7)
