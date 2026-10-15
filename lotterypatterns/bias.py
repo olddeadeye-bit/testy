@@ -111,7 +111,7 @@ def _analyse(counts: list[int], pool: int, picks: int, draws: int,
                  q_value=q_values[n - 1])
         for n in range(1, pool + 1)
     ]
-    overall = chi_square_uniform(counts)
+    overall = chi_square_uniform(counts, picks=picks)
     return BiasReport(barrel=barrel, draws=draws, pool=pool, picks=picks,
                       balls=balls, chi_square=overall.statistic,
                       chi_square_p=overall.p_value, alpha=alpha)

@@ -340,19 +340,36 @@ def chi_square_sf(statistic: float, df: int) -> float:
     return max(0.0, min(1.0, _upper_gamma_cf(a, x)))
 
 
-def chi_square_uniform(counts: Sequence[int]) -> Association:
+def chi_square_uniform(counts: Sequence[int], picks: int = 1) -> Association:
     """Test whether counts came from a uniform distribution.
 
     This is the test that matters for a lottery: if one ball really does come
     up more than the others, an even-draw hypothesis should fail here.
+
+    ``picks`` is how many balls each draw takes from the barrel, and it is not
+    cosmetic. Balls are drawn *without replacement*, so within a draw the
+    counts are negatively correlated and the usual chi-square reference is
+    wrong. Writing Z for the standardised counts, their correlation matrix is
+    ``(n/(n-1))I - (1/(n-1))J``, whose eigenvalues are 0 once and ``n/(n-1)``
+    with multiplicity ``n-1``. The statistic is therefore distributed as
+    ``((n-k)/(n-1)) * chi2(n-1)``, with mean ``n-k`` rather than ``n-1``.
+
+    Comparing the raw statistic against chi2(n-1) makes every p-value too
+    high: on fair 6-of-59 draws only about 1.5% land below 0.05 instead of 5%,
+    so real bias goes unreported. Scaling by ``(n-1)/(n-k)`` restores it.
+    ``picks=1`` gives a scale of 1, which is correct for a barrel that yields
+    a single ball.
     """
     n = len(counts)
     total = sum(counts)
     if n < 2 or total == 0:
         return Association(0.0, 1.0, total, "chi_square")
+    if not 1 <= picks < n:
+        raise ValueError(f"picks must be at least 1 and fewer than {n}; got {picks}")
     expected = total / n
     statistic = sum((c - expected) ** 2 / expected for c in counts)
-    return Association(statistic, chi_square_sf(statistic, n - 1), total, "chi_square")
+    corrected = statistic * (n - 1) / (n - picks)
+    return Association(statistic, chi_square_sf(corrected, n - 1), total, "chi_square")
 
 
 def binomial_z_test(successes: int, trials: int, probability: float) -> Association:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import statistics
 import sys
 import tempfile
 import unittest
@@ -11,7 +12,8 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lotterypatterns import simulate_draws  # noqa: E402
-from lotterypatterns.bias import analyse_bonus_balls, analyse_main_balls  # noqa: E402
+from lotterypatterns.bias import analyse_bonus_balls, analyse_main_balls
+from lotterypatterns.stats import chi_square_sf, chi_square_uniform  # noqa: E402
 from lotterypatterns.draws import Draw, DrawHistory  # noqa: E402
 from lotterypatterns.fetch import FetchError, load_history  # noqa: E402
 from lotterypatterns.games import (  # noqa: E402
@@ -82,6 +84,41 @@ class TestBallBias(unittest.TestCase):
         self.assertTrue(report.is_biased)
         self.assertIn(17, [b.number for b in report.biased_balls])
         self.assertIn("NOT coming up evenly", report.summary())
+
+    def test_the_evenness_test_is_correctly_calibrated(self):
+        """On fair draws the p-values must be uniform, or the test is wrong.
+
+        Balls are drawn without replacement, so the counts are negatively
+        correlated and the raw statistic has mean n-k, not n-1. Comparing it
+        against chi2(n-1) uncorrected made about 1.5% of fair histories land
+        below p=0.05 instead of 5%, so genuine bias went unreported.
+        """
+        p_values = [analyse_main_balls(
+            simulate_draws(600, pool=59, picks=6, seed=770_000 + i)).chi_square_p
+            for i in range(200)]
+        below_five = sum(1 for p in p_values if p <= 0.05) / len(p_values)
+        below_half = sum(1 for p in p_values if p <= 0.50) / len(p_values)
+        self.assertLess(abs(below_five - 0.05), 0.04, "tail is miscalibrated")
+        self.assertLess(abs(below_half - 0.50), 0.12, "centre is miscalibrated")
+        self.assertLess(abs(statistics.fmean(p_values) - 0.5), 0.08)
+
+    def test_the_correction_matches_its_derivation(self):
+        """The scale factor is (n-1)/(n-k), and picks=1 must leave it alone."""
+        counts = [20] * 38 + [60]
+        plain = chi_square_uniform(counts)
+        drawn = chi_square_uniform(counts, picks=5)
+        self.assertEqual(plain.statistic, drawn.statistic)
+        self.assertLess(drawn.p_value, plain.p_value)   # correction adds power
+        self.assertAlmostEqual(
+            chi_square_sf(plain.statistic * (39 - 1) / (39 - 5), 38),
+            drawn.p_value, places=12)
+        self.assertAlmostEqual(chi_square_uniform(counts, picks=1).p_value,
+                               plain.p_value, places=12)
+
+    def test_a_single_ball_barrel_gets_no_correction(self):
+        history = simulate_draws(400, pool=39, picks=5, seed=55)
+        report = analyse_bonus_balls(history, THUNDERBALL)
+        self.assertIsNone(report)   # no bonus column in a simulated history
 
     def test_excess_is_reported_as_a_percentage(self):
         report = analyse_main_balls(simulate_draws(1500, pool=59, picks=6, seed=8))

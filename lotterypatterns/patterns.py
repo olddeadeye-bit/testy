@@ -156,7 +156,7 @@ def position_findings(history: DrawHistory) -> list[tuple[str, str, float, float
         counts = [0] * history.pool
         for value in values:
             counts[value - 1] += 1
-        test = chi_square_uniform(counts)
+        test = chi_square_uniform(counts)   # one ball per position, so no correction
         results.append((f"position {position + 1} evenness",
                         f"mean ball {statistics.fmean(values):.1f}",
                         test.statistic, test.p_value))
@@ -227,7 +227,7 @@ def machine_findings(history: DrawHistory) -> tuple[list, list[str]]:
             for draw in draws:
                 for number in draw.numbers:
                     counts[number - 1] += 1
-            test = chi_square_uniform(counts)
+            test = chi_square_uniform(counts, picks=history.picks)
             results.append((f"{label} {key} evenness",
                             f"{len(draws)} draws", test.statistic, test.p_value))
 
