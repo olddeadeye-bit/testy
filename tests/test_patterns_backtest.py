@@ -72,6 +72,25 @@ class TestPatternsOnFairDraws(unittest.TestCase):
         for expected in ("pairs", "recency", "serial", "periodicity", "machines"):
             self.assertIn(expected, kinds)
 
+    def test_one_stray_row_does_not_switch_the_position_family_back_on(self):
+        """A published archive is sorted; a stray unsorted row must not matter.
+
+        Real files carry the odd row in true draw order. Testing the archive
+        with all() meant one such row in five thousand re-enabled the position
+        tests, which then reported the sorting itself at p = 0.
+        """
+        draws = [Draw(date(2020, 1, 1) + timedelta(days=3 * i),
+                      tuple(sorted(random.Random(i).sample(range(1, 60), 6))))
+                 for i in range(400)]
+        draws[137] = Draw(draws[137].drawn_on, (41, 9, 23, 2, 55, 17))
+        report = find_patterns(DrawHistory(draws, pool=59, picks=6))
+        self.assertNotIn("positions", {f.kind for f in report.findings})
+        self.assertTrue(any("ascending order" in n for n in report.notes))
+
+    def test_a_genuinely_unsorted_archive_still_gets_position_tests(self):
+        report = find_patterns(build(400, 3))      # drawn order, not sorted
+        self.assertIn("positions", {f.kind for f in report.findings})
+
     def test_sorted_archives_skip_the_position_family(self):
         draws = [Draw(date(2020, 1, 1) + timedelta(days=3 * i),
                       tuple(sorted(random.Random(i).sample(range(1, 60), 6))))

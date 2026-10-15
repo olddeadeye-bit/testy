@@ -354,11 +354,22 @@ def find_patterns(history: DrawHistory, *, families: tuple[str, ...] = FAMILIES,
         for label, detail, statistic, p in pair_findings(history):
             raw.append(("pairs", label, detail, statistic, p))
     if "positions" in families:
-        sorted_already = all(list(d.numbers) == sorted(d.numbers) for d in history)
+        # Judge the archive by proportion, not unanimously. Published files are
+        # stored sorted, but a stray row or two often carries the real draw
+        # order; with `all()` a single such row out of five thousand switched
+        # the family back on and it reported the sorting itself as a discovery,
+        # at p = 0 — the strongest finding in the run and entirely spurious.
+        ascending = sum(1 for d in history if list(d.numbers) == sorted(d.numbers))
+        share = ascending / len(history)
+        sorted_already = share >= 0.95
         if sorted_already:
-            notes.append("this archive stores each draw in ascending order, not "
-                         "the order the balls came out, so position tests were "
-                         "skipped — they would only rediscover the sorting")
+            stray = len(history) - ascending
+            notes.append(
+                f"{share:.1%} of draws are stored in ascending order, so this "
+                "archive records the sorted numbers rather than the order the "
+                "balls came out; position tests were skipped, since they would "
+                "only rediscover the sorting"
+                + (f" ({stray} row(s) departing from it)" if stray else ""))
         else:
             for label, detail, statistic, p in position_findings(history):
                 raw.append(("positions", label, detail, statistic, p))
