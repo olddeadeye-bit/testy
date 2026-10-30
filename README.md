@@ -150,6 +150,30 @@ Planted a bias into one of two machines and it named the machine:
 * [periodicity] ball 38 every 2 draws: 361 appearances, concentration 0.612
 ```
 
+## What could this have found?
+
+"Nothing found" only means something alongside how big a bias would have shown
+up. A ball rigged to come up 30% too often is invisible in 500 draws and
+obvious in 5,000.
+
+```bash
+python3 -m lotterypatterns power --game lotto --want 10
+```
+
+```
+German Lotto - 5,055 draws
+  If one number were secretly rigged to come up 16% more often than it should,
+  this analysis would catch it 8 times out of 10.
+  So "no bias found" means: no number is rigged by more than about 16%.
+  A smaller rigging could still be hiding in the data.
+```
+
+On the three real archives: German Lotto (5,055 draws) catches about 16%,
+Austrian (3,691) about 17%, EuroMillions (1,983) about 28%. The formula is
+checked against simulation and agrees within a point or two. It refuses to
+answer below about ten expected appearances per ball, where the approximation
+stops being trustworthy.
+
 ## Does any of it actually predict anything?
 
 This is the question that separates a pattern-finding tool from data-dredging,

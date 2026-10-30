@@ -236,6 +236,24 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_power(args: argparse.Namespace) -> int:
+    """Say how big a bias this archive could actually have revealed."""
+    from .power import draws_needed, power_report
+    if args.game or args.draws:
+        history = _load_history(args)
+        draws, pool, picks, name = len(history), history.pool, history.picks, history.name
+    else:
+        game = get_game("lotto")
+        draws, pool, picks, name = args.n_draws, game.pool, game.picks, "Lotto (example)"
+    print(power_report(draws, pool, picks, name).summary())
+    if args.want:
+        needed = draws_needed(pool, picks, 1 + args.want / 100)
+        print()
+        print(f"  To catch a number rigged {args.want:.0f}% too common you would need "
+              + (f"about {needed:,} draws." if needed else "more draws than is practical."))
+    return 0
+
+
 def cmd_games(args: argparse.Namespace) -> int:
     for game in GAMES.values():
         print(game.describe())
@@ -355,6 +373,16 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_parser.add_argument("--step", type=int, default=1)
     backtest_parser.add_argument("--predictions", type=int, default=400)
     backtest_parser.set_defaults(func=cmd_backtest)
+
+    power_parser = subparsers.add_parser(
+        "power", help="How big a bias could this archive have revealed?")
+    power_parser.add_argument("--game", choices=sorted(GAMES))
+    power_parser.add_argument("--draws", help="Draw history CSV")
+    power_parser.add_argument("--n-draws", type=int, default=3000,
+                              help="Draws to assume when no archive is given")
+    power_parser.add_argument("--want", type=float, default=None,
+                              help="Also say how many draws catch a bias of this many percent")
+    power_parser.set_defaults(func=cmd_power)
 
     games_parser = subparsers.add_parser("games", help="List the UK games and their odds")
     games_parser.set_defaults(func=cmd_games)
