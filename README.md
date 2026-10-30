@@ -150,6 +150,38 @@ Planted a bias into one of two machines and it named the machine:
 * [periodicity] ball 38 every 2 draws: 361 appearances, concentration 0.612
 ```
 
+## Is there an algorithm underneath?
+
+If the draws came from software rather than physical balls, a weak generator
+leaves fingerprints. Three are looked for:
+
+```bash
+python3 -m lotterypatterns hunt --game lotto
+python3 -m lotterypatterns hunt --plant "toy LCG (4,096 states)"   # check the hunt itself
+```
+
+* **Repeated draws.** A generator with a small internal state must cycle, and
+  then identical draws recur far beyond the 0.28 pairs expected in 5,000 draws.
+* **Short linear recurrences.** Shift-register style generators are exactly
+  predictable from a short window of output. Berlekamp-Massey measures how long
+  a recurrence reproduces a bit stream: about half its length for random bits,
+  far less for a linear generator. The lower tail is computed from its exact
+  geometric law rather than a normal approximation.
+* **A hidden rhythm.** A cycle too long to repeat exactly can still show as a
+  sharp peak in the frequency spectrum of the draw sums.
+
+Checked both ways, as always. On 4,000 draws it finds a toy 4,096-state
+generator (all five tests fire, 10,362 identical pairs against 0.57 expected)
+and a 16-bit shift register, and it stays quiet on a Mersenne Twister, with
+false alarms at 2.4% against a 5% ceiling over 250 runs.
+
+It misses the classic C `rand()` generator, and the reason matters: published
+archives store each draw's numbers sorted, so the order the generator produced
+them in is gone. On the three real archives (10,729 draws) nothing is flagged.
+That rules out repeating cycles, short recurrences and obvious rhythms. It does
+not rule out a competent generator, which is built to pass exactly these tests,
+and it says nothing about machines that use physical balls.
+
 ## What could this have found?
 
 "Nothing found" only means something alongside how big a bias would have shown
